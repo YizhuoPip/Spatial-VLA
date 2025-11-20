@@ -253,7 +253,24 @@ def apply_trajectory_transforms(
         task_augment_kwargs (dict, optional): Additional keyword arguments to pass to the task augmentation
             function.
         num_parallel_calls (int, optional): number of parallel calls for map operations. Default to AUTOTUNE.
+    example:
+        原始轨迹 (T=100步)
+            ↓
+        [过滤] 移除无效数据
+            ↓
+        [添加pad_mask] 标记填充数据
+            ↓
+        [goal relabeling] 添加目标信息
+            ↓
+        [chunking] ⭐️ 关键步骤
+            → 观测: [100, H, W, 3] → [93, 1, H, W, 3]
+            → 动作: [100, 7] → [93, 8, 7]
+            ↓
+        [subsampling] 可选的长度截断
+            ↓
+        输出 (T'=93个训练样本)
     """
+    # 过滤
     if skip_unlabeled:
         if "language_instruction" not in dataset.element_spec["task"]:
             raise ValueError("skip_unlabeled=True but dataset does not have language labels.")

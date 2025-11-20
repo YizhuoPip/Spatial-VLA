@@ -58,7 +58,7 @@ def chunk_act_obs(traj: Dict, window_size: int, future_action_window_size: int =
 
 
 def subsample(traj: Dict, subsample_length: int) -> Dict:
-    """Subsamples trajectories to the given length."""
+    """Subsamples trajectories to the given length. 减少轨迹长度"""
     traj_len = tf.shape(traj["action"])[0]
     if traj_len > subsample_length:
         indices = tf.random.shuffle(tf.range(traj_len))[:subsample_length]
