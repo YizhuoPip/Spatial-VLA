@@ -19,8 +19,8 @@ from typing import Any, Dict
 
 import tensorflow as tf
 
-from datasets.utils.oxe.utils.droid_utils import droid_baseact_transform, droid_finetuning_transform
-from datasets.utils.rlds.utils.data_utils import (
+from dataset.utils.oxe.utils.droid_utils import droid_baseact_transform, droid_finetuning_transform
+from dataset.utils.rlds.utils.data_utils import (
     binarize_gripper_actions,
     invert_gripper_actions,
     rel2abs_gripper_actions,

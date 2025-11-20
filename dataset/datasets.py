@@ -21,10 +21,10 @@ from PIL import Image
 from torch.utils.data import Dataset, IterableDataset
 from transformers import PreTrainedTokenizerBase
 
-from datasets.utils.oxe import get_oxe_dataset_kwargs_and_weights, OXE_NAMED_MIXTURES
-from datasets.utils.rlds import make_interleaved_dataset, make_single_dataset
-from datasets.utils.action_tokenizer import ActionTokenizer
-from datasets.utils.constants import ACTION_PROPRIO_NORMALIZATION_TYPE, IGNORE_INDEX, NUM_ACTIONS_CHUNK
+from dataset.utils.oxe import get_oxe_dataset_kwargs_and_weights, OXE_NAMED_MIXTURES
+from dataset.utils.rlds import make_interleaved_dataset, make_single_dataset
+from dataset.utils.action_tokenizer import ActionTokenizer
+from dataset.utils.constants import ACTION_PROPRIO_NORMALIZATION_TYPE, IGNORE_INDEX, NUM_ACTIONS_CHUNK
 from models.backbones.llm import PromptBuilder
 from models.backbones.vision import ImageTransform
 

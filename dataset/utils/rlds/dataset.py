@@ -17,10 +17,10 @@ import tensorflow_datasets as tfds
 
 
 from overwatch import initialize_overwatch
-from datasets.utils.constants import ACTION_PROPRIO_NORMALIZATION_TYPE
-from datasets.utils.rlds import obs_transforms, traj_transforms
-from datasets.utils.rlds.utils import goal_relabeling, task_augmentation
-from datasets.utils.rlds.utils.data_utils import (
+from dataset.utils.constants import ACTION_PROPRIO_NORMALIZATION_TYPE
+from dataset.utils.rlds import obs_transforms, traj_transforms
+from dataset.utils.rlds.utils import goal_relabeling, task_augmentation
+from dataset.utils.rlds.utils.data_utils import (
     allocate_threads,
     get_dataset_statistics,
     normalize_action_and_proprio,

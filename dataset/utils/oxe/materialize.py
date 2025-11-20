@@ -9,9 +9,9 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from datasets.utils.constants import ACTION_DIM, ACTION_PROPRIO_NORMALIZATION_TYPE, ACTION_TOKEN_BEGIN_IDX, IGNORE_INDEX, NUM_ACTIONS_CHUNK, PROPRIO_DIM, STOP_INDEX
-from datasets.utils.oxe.configs import OXE_DATASET_CONFIGS, ActionEncoding
-from datasets.utils.oxe.transforms import OXE_STANDARDIZATION_TRANSFORMS
+from dataset.utils.constants import ACTION_DIM, ACTION_PROPRIO_NORMALIZATION_TYPE, ACTION_TOKEN_BEGIN_IDX, IGNORE_INDEX, NUM_ACTIONS_CHUNK, PROPRIO_DIM, STOP_INDEX
+from dataset.utils.oxe.configs import OXE_DATASET_CONFIGS, ActionEncoding
+from dataset.utils.oxe.transforms import OXE_STANDARDIZATION_TRANSFORMS
 
 def make_oxe_dataset_kwargs(
     dataset_name: str,
