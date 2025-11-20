@@ -194,4 +194,24 @@ class RLDSDataset(IterableDataset):
     def __getitem__(self, idx: int) -> None:
         raise NotImplementedError("IterableDataset does not implement map-style __getitem__; see __iter__ instead!")
 
+class EpisodicRLDSDataset(RLDSDataset):
+    """Returns full episodes as list of steps instead of individual transitions (useful for visualizations)."""
 
+    def make_dataset(self, rlds_config):
+        per_dataset_kwargs = rlds_config["dataset_kwargs_list"]
+        assert len(per_dataset_kwargs) == 1, "Only support single-dataset `mixes` for episodic datasets."
+
+        return make_single_dataset(
+            per_dataset_kwargs[0],
+            train=rlds_config["train"],
+            traj_transform_kwargs=rlds_config["traj_transform_kwargs"],
+            frame_transform_kwargs=rlds_config["frame_transform_kwargs"],
+        )
+
+    def __iter__(self) -> Dict[str, Any]:
+        for rlds_batch in self.dataset.as_numpy_iterator():
+            out = [
+                self.batch_transform(tree_map(lambda x: x[i], rlds_batch))  # noqa: B023
+                for i in range(rlds_batch["action"].shape[0])
+            ]
+            yield out

@@ -84,7 +84,7 @@ def make_dataset_from_rlds(
     :param num_parallel_reads (int): number of parallel read workers. Default to AUTOTUNE.
     :param num_parallel_calls (int): number of parallel calls for traj_map operations. Default to AUTOTUNE.
     """
-    REQUIRED_KEYS = {"observations", "actions"}
+    REQUIRED_KEYS = {"observation", "action"}
     if language_key is not None:
         REQUIRED_KEYS.add(language_key)
     
