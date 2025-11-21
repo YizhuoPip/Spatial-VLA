@@ -1,16 +1,6 @@
-"""
-finetune.py
-
-Fine-tunes Qwen2.5-0.5B via LoRA.
-"""
-
 import sys
 import os
-
-# 在代码中设置环境变量
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-os.environ["HF_DATASETS_OFFLINE"] = "1" 
-os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -51,15 +41,14 @@ from models.utils.action_utils import (
     get_current_action_mask,
     get_next_actions_mask
 )
-from models.hf import load
+from models.hf.load import load
 from dataset.utils.data_utils import PaddedCollatorForActionPrediction
 from dataset.utils.action_tokenizer import ActionTokenizer
 from dataset.utils.constants import (
     ACTION_DIM,
     ACTION_PROPRIO_NORMALIZATION_TYPE,
     NUM_ACTIONS_CHUNK,
-    PROPRIO_DIM,
-    NUM_TOKENS
+    PROPRIO_DIM
 )
 from dataset import get_vla_dataset_and_collator
 
@@ -916,13 +905,12 @@ def finetune(cfg: FinetuneConfig) -> None:
 
     else:
         RAW_STATE_DICT ={}
-        vla = AutoModelForVision2Seq.from_pretrained(
+        vla = OpenVLAForActionPrediction.from_pretrained(
             cfg.vla_path,
             torch_dtype=torch.bfloat16,
-            low_cpu_mem_usage=False,
-            trust_remote_code=False,
-            ).to(device_id)
-
+            low_cpu_mem_usage=True,
+            trust_remote_code=True,
+        ).to(device_id)
     # Set number of images in VLA input
     vla.vision_backbone.set_num_images_in_input(cfg.num_images_in_input)
 
@@ -1070,14 +1058,14 @@ def finetune(cfg: FinetuneConfig) -> None:
     train_dataset, val_dataset, action_tokenizer, collator = get_vla_dataset_and_collator(
         cfg.data_root_dir,
         cfg.dataset_name,
-        processor.image_processor,
+        processor.image_processor.apply_transform,
         processor.tokenizer,
         PurePromptBuilder,
         tuple(vla.module.config.image_sizes),
         shuffle_buffer_size=cfg.shuffle_buffer_size,
         padding_side="right",
         use_wrist_image=use_wrist_image,
-        use_proprio=cfg.use_proprio
+        use_proprio=cfg.use_proprio,
         image_aug=cfg.image_aug,
     )
     # [Important] Save dataset statistics so that we can unnormalize actions during inference

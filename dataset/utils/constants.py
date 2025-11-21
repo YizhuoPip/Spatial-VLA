@@ -13,6 +13,9 @@ IGNORE_INDEX = -100
 ACTION_TOKEN_BEGIN_IDX = 31743
 STOP_INDEX = 2  
 
+#Qwen25
+ACTION_TOKEN_BEGIN_IDX_QWEN= 151386
+NUM_TOKENS_QWEN = 64
 
 # Defines supported normalization schemes for action and proprioceptive state.
 class NormalizationType(str, Enum):

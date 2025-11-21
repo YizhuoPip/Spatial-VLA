@@ -172,6 +172,7 @@ class HFCausalLLMBackbone(LLMBackbone, ABC):
             return
 
         # Note =>> this assert should hold for all Llama-derived tokenizers (`LlamaTokenizerFast` ==> includes Mistral!
+        #Qwen的tokenizer在这里是有问题的
         assert (self.tokenizer("Test 123", add_special_tokens=True).input_ids[0] == self.tokenizer.bos_token_id) and (
             self.tokenizer("Test 123", add_special_tokens=False).input_ids[0] != self.tokenizer.bos_token_id
         ), (

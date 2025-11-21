@@ -34,6 +34,7 @@ class PurePromptBuilder(PromptBuilder):
         self.wrap_human = lambda msg: f"In: {msg}\nOut: "
         self.wrap_gpt = lambda msg: f"{msg if msg != '' else ' '}{self.eos}"
         #self.eos 指的是llm生成结束符
+        self.prompt, self.turn_count = "", 0
 
     def add_turn(self, role: str, message: str) -> str:
         """

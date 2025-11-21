@@ -39,65 +39,19 @@ LLM_BACKBONES = {
 
 
 def get_vision_backbone_and_transform(
-    vision_backbone_id: str,
-    image_resize_strategy: str,
-    image_sequence_len: int,
+    vision_backbone_id: str, image_resize_strategy: str
 ) -> Tuple[VisionBackbone, ImageTransform]:
     """Instantiate a Vision Backbone, returning both the nn.Module wrapper class and default Image Transform."""
     if vision_backbone_id in VISION_BACKBONES:
         vision_cfg = VISION_BACKBONES[vision_backbone_id]
         vision_backbone: VisionBackbone = vision_cfg["cls"](
-            vision_backbone_id, image_resize_strategy, image_sequence_len=image_sequence_len, **vision_cfg["kwargs"]
+            vision_backbone_id, image_resize_strategy, **vision_cfg["kwargs"]
         )
         image_transform = vision_backbone.get_image_transform()
         return vision_backbone, image_transform
 
     else:
         raise ValueError(f"Vision Backbone `{vision_backbone_id}` is not supported!")
-
-
-# def _is_network_or_dns_error(e: Exception) -> bool:
-#     s = str(e)
-#     return (
-#         "Name or service not known" in s or
-#         "Failed to resolve" in s or
-#         "HTTPSConnectionPool" in s or
-#         isinstance(e, socket.gaierror)
-#     )
-
-
-# from typing import Tuple, Optional, Any, Dict
-# def get_vision_backbone_and_transform(
-#     vision_backbone_id: str,
-#     image_resize_strategy: str,
-#     image_sequence_len: int,
-#     *,
-#     checkpoint_path: Optional[str] = None,
-#     pretrained: Optional[bool] = None,
-#     **extra_kwargs: Any,  
-# ) -> Tuple[VisionBackbone, ImageTransform]:
-#     """Instantiate a Vision Backbone, returning both the nn.Module wrapper class and default Image Transform."""
-#     if vision_backbone_id not in VISION_BACKBONES:
-#         raise ValueError(f"Vision Backbone `{vision_backbone_id}` is not supported!")
-
-#     vision_cfg = VISION_BACKBONES[vision_backbone_id]
-
-
-#     merged_kwargs: Dict[str, Any] = dict(vision_cfg["kwargs"])
-#     if pretrained is not None:
-#         merged_kwargs["pretrained"] = pretrained
-#     if checkpoint_path is not None:
-#         merged_kwargs["checkpoint_path"] = checkpoint_path
-#     merged_kwargs.update(extra_kwargs)
-
-#     vision_backbone: VisionBackbone = vision_cfg["cls"](
-#         vision_backbone_id,
-#         image_resize_strategy,
-#         image_sequence_len=image_sequence_len,
-#         **merged_kwargs,
-#     )
-#     image_transform = vision_backbone.get_image_transform()
-#     return vision_backbone, image_transform
 
 
 def get_llm_backbone_and_tokenizer(
