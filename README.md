@@ -16,14 +16,44 @@ Spatial-VLA/
 │       ├── constants.py           # 常量定义（支持LIBERO/ALOHA/BRIDGE）
 │       ├── data_utils.py          # 数据处理工具
 │       ├── rlds/                  # RLDS数据集支持
+│       │   ├── dataset.py         # RLDS数据集加载
+│       │   ├── traj_transforms.py # 轨迹变换
+│       │   ├── obs_transforms.py  # 观测变换
+│       │   └── utils/             # RLDS工具（goal_relabeling, task_augmentation等）
 │       └── oxe/                   # Open-X-Embodiment数据集支持
+│           ├── configs.py         # OXE数据集配置
+│           ├── mixtures.py        # 数据集混合配置
+│           ├── transforms.py      # OXE数据变换
+│           └── materialize.py     # 数据集实例化
 ├── models/                    # 模型模块
 │   ├── backbones/            # 骨干网络
-│   │   ├── llm/             # 语言模型基类
-│   │   └── vision/          # 视觉模型基类
+│   │   ├── llm/             # 语言模型（base_llm, qwen25, prompter等）
+│   │   └── vision/          # 视觉模型（base_vision, dinosiglip_vit）
 │   ├── action_heads/        # 动作预测头
+│   │   ├── DiffusionActionHead.py   # 扩散模型动作头
+│   │   └── L1RegressionActionHead.py # L1回归动作头
+│   ├── projectors/          # 投影层
+│   │   └── ProprioProjector.py      # 本体感知投影器
+│   ├── vlms/                # 视觉语言模型
+│   │   ├── base_vlm.py      # VLM基类
+│   │   └── prismatic.py     # Prismatic VLM实现
+│   ├── utils/               # 模型工具
+│   │   ├── action_utils.py  # 动作处理工具
+│   │   ├── nn_utils.py      # 神经网络工具
+│   │   └── film_vit_wrapper.py # FiLM-ViT封装
 │   └── hf/                  # HuggingFace集成
+│       ├── modeling_prismatic.py    # Prismatic模型定义
+│       ├── configuration_prismatic.py # 配置类
+│       ├── processing_prismatic.py  # 处理器
+│       ├── load.py          # 模型加载
+│       ├── materialize.py   # 模型实例化
+│       └── conf/            # 配置注册
+│           ├── models.py    # 模型配置
+│           ├── datasets.py  # 数据集配置
+│           ├── vla.py       # VLA配置
+│           └── registry.py  # 注册表
 └── overwatch/               # 日志和监控模块
+    └── overwatch.py         # 日志监控实现
 
 ```
 
