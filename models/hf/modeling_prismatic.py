@@ -21,11 +21,11 @@ from timm.models.vision_transformer import LayerScale
 from transformers import AutoModelForCausalLM, PretrainedConfig, PreTrainedModel
 from transformers.modeling_outputs import ModelOutput
 
-from prismatic.training.train_utils import (
+from models.utils.action_utils import (
     get_current_action_mask,
     get_next_actions_mask,
 )
-from prismatic.vla.constants import (
+from dataset.utils.constants import (
     ACTION_DIM,
     ACTION_PROPRIO_NORMALIZATION_TYPE,
     ACTION_TOKEN_BEGIN_IDX,
@@ -53,6 +53,7 @@ def unpack_tuple(fn: Callable[[Any], Tuple[Any]]) -> Callable[[Any], Any]:
 # HF Transformers overwrites parameters with names containing `gamma`; we're going to patch VisionBackbone.LayerScale.
 #   =>> TIMM :: https://github.com/huggingface/pytorch-image-models/blob/main/timm/models/vision_transformer.py#L109
 #   =>> Transformers :: https://github.com/huggingface/transformers/blob/main/src/transformers/modeling_utils.py#L3960
+
 def _ls_new_forward(self, x: torch.Tensor) -> torch.Tensor:
     return x.mul_(self.scale_factor) if self.inplace else x * self.scale_factor
 
