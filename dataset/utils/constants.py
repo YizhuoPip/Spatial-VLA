@@ -15,7 +15,6 @@ STOP_INDEX = 2
 
 #Qwen25
 ACTION_TOKEN_BEGIN_IDX_QWEN= 151386
-NUM_TOKENS_QWEN = 64
 
 # Defines supported normalization schemes for action and proprioceptive state.
 class NormalizationType(str, Enum):
@@ -80,6 +79,7 @@ NUM_ACTIONS_CHUNK = constants["NUM_ACTIONS_CHUNK"]
 ACTION_DIM = constants["ACTION_DIM"]
 PROPRIO_DIM = constants["PROPRIO_DIM"]
 ACTION_PROPRIO_NORMALIZATION_TYPE = constants["ACTION_PROPRIO_NORMALIZATION_TYPE"]
+NUM_TOKENS = ACTION_DIM * NUM_ACTIONS_CHUNK
 
 # Print which robot platform constants are being used (for debugging)
 print(f"Using {ROBOT_PLATFORM} constants:")

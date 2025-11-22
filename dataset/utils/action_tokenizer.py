@@ -9,6 +9,7 @@ from typing import List, Union
 
 import numpy as np
 from transformers import PreTrainedTokenizerBase
+from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
 
 class ActionTokenizer:
     def __init__(self, tokenizer: PreTrainedTokenizerBase, bins: int = 256, min_action: int = -1, max_action: int = 1) -> None :
@@ -25,7 +26,10 @@ class ActionTokenizer:
         self.bins = np.linspace(self.min_action, self.max_action, self.n_bins) #将连续值映射成bins个区间
         self.bin_centers = (self.bins[:-1] + self.bins[1:]) / 2 #取出每个小区间的中心
 
-        self.action_token_begin_idx: int = int(self.tokenizer.vocab_size - 1 - self.n_bins)
+        if isinstance(self.tokenizer, Qwen2TokenizerFast):
+            self.action_token_begin_idx = int(len(self.tokenizer) - (self.n_bins + 1))
+        else:
+            self.action_token_begin_idx: int = int(self.tokenizer.vocab_size - 1 - self.n_bins)
         # 其实是把action token当作词汇表中的一部分，把词汇表中最不常出现的东西替代掉。
         # 因为ids的范围是[0, self.tokenizer.vocab_size-1]
 
@@ -38,6 +42,9 @@ class ActionTokenizer:
         action = np.clip(action, a_min=self.min_action, a_max=self.max_action)
         discretized_action = np.digitize(action, self.bins)
         #print(f"discretized_action: {discretized_action}")
+
+        if isinstance(self.tokenizer, Qwen2TokenizerFast):
+            return (self.action_token_begin_idx + discretized_action).tolist()
 
         if len(discretized_action.shape) == 1:
             return self.tokenizer.decode(list(self.action_token_begin_idx + discretized_action))

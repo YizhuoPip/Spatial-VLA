@@ -17,15 +17,17 @@ from typing import Any, Dict, Tuple, Type
 
 import numpy as np
 import torch
+import random
 from PIL import Image
 from torch.utils.data import Dataset, IterableDataset
 from transformers import PreTrainedTokenizerBase
+from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
 
 from dataset.utils.oxe import get_oxe_dataset_kwargs_and_weights, OXE_NAMED_MIXTURES
 from dataset.utils.rlds import make_interleaved_dataset, make_single_dataset
 from dataset.utils.action_tokenizer import ActionTokenizer
-from dataset.utils.constants import ACTION_PROPRIO_NORMALIZATION_TYPE, IGNORE_INDEX, NUM_ACTIONS_CHUNK
-from models.backbones.llm import PromptBuilder
+from dataset.utils.constants import ACTION_PROPRIO_NORMALIZATION_TYPE, IGNORE_INDEX, NUM_ACTIONS_CHUNK, NUM_TOKENS
+from models.backbones.llm import PromptBuilder, QwenPromptBuilder
 from models.backbones.vision import ImageTransform
 
 # @dataclass 自动生成 __init__ 方法    
@@ -49,30 +51,65 @@ class RLDSBatchTransform:
         img = Image.fromarray(rlds_batch["observation"]["image_primary"][0])
         lang = rlds_batch["task"]["language_instruction"].decode().lower()
         actions = rlds_batch["action"]
-
-        # Construct Chat-based Prompt =>> Input is default query + language instruction, output are the action tokens
-        prompt_builder = self.prompt_builder_fn("openvla")
         
-        #get current action 
+        #get action 
         current_action = rlds_batch["action"][0]
-        current_action_string = self.action_tokenizer(current_action)
-        #get future action chunk
         future_actions = rlds_batch["action"][1:]
-        future_action_string = ''.join(self.action_tokenizer(future_actions))
-        #decode 之后的action token，然后与文本一起去encode
-        action_chunk_string = current_action_string + future_action_string
-        action_chunk_len = len(action_chunk_string)
 
-        conversation = [
-            {"from": "human", "value": f"What action should the robot take to {lang}?"},
-            {"from": "gpt", "value": action_chunk_string},
-        ]
-        for turn in conversation:
-            prompt_builder.add_turn(turn["from"], turn["value"])
-        
-        # Tokenize
-        input_ids = self.base_tokenizer(prompt_builder.get_prompt(), add_special_tokens=True).input_ids
-        labels = list(input_ids)
+        if isinstance(self.action_tokenizer.tokenizer, Qwen2TokenizerFast):
+            self.prompt_builder_fn = QwenPromptBuilder
+            prompt_builder = self.prompt_builder_fn("openvla")
+
+            future_actions_string = self.action_tokenizer(future_actions)
+            current_action_string = self.action_tokenizer(current_action)
+            action_chunk_string = [current_action_string] + future_actions_string
+            flattened_action_chunk_string = [item for sublist in action_chunk_string for item in sublist]
+            action_chunk_len = len(flattened_action_chunk_string) 
+
+            conversation = [
+                {"from": "human", "value": f"What action should the robot take to {lang}?"},
+                {"from": "gpt", "value": ''},
+            ]
+
+            for turn in conversation:
+                prompt_builder.add_turn(turn["from"], turn["value"])
+
+            prompt = prompt_builder.get_prompt() #e.g. 'In: What action should the robot take to put both the cream cheese box and the butter in the basket?\nOut: 希</s>'
+            input_ids = self.base_tokenizer(prompt_builder.get_prompt(), add_special_tokens=True).input_ids
+
+            if len(input_ids) >= 3:
+                del input_ids[-3] 
+                del input_ids[-2] 
+                del input_ids[-1] 
+
+            if NUM_TOKENS<len(flattened_action_chunk_string):
+                input_ids = input_ids + flattened_action_chunk_string[:NUM_TOKENS]
+            else:
+                remaining_length = NUM_TOKENS - len(flattened_action_chunk_string)
+                extended_array = random.choices(flattened_action_chunk_string, k=remaining_length)
+                
+                input_ids = input_ids + flattened_action_chunk_string + extended_array
+            labels = list(input_ids)
+            action_chunk_len = NUM_TOKENS
+        else:
+            prompt_builder = self.prompt_builder_fn("openvla")
+            current_action_string = self.action_tokenizer(current_action)
+            future_action_string = ''.join(self.action_tokenizer(future_actions))
+            #decode 之后的action token，然后与文本一起去encode
+            action_chunk_string = current_action_string + future_action_string
+            action_chunk_len = len(action_chunk_string)
+
+            conversation = [
+                {"from": "human", "value": f"What action should the robot take to {lang}?"},
+                {"from": "gpt", "value": action_chunk_string},
+            ]
+            for turn in conversation:
+                prompt_builder.add_turn(turn["from"], turn["value"])
+            
+            # Tokenize
+            input_ids = self.base_tokenizer(prompt_builder.get_prompt(), add_special_tokens=True).input_ids
+            labels = list(input_ids)
+
         input_ids, labels = torch.tensor(input_ids), torch.tensor(labels)
         # Image Transform
         pixel_values = self.image_transform(img)
