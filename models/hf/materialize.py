@@ -15,7 +15,7 @@ from models.backbones.vision import (
     ImageTransform,
     VisionBackbone,
 )
-from models.vlms import PrismaticVLM
+from models.backbones.vlms import PrismaticVLM
 
 # === Registries =>> Maps ID --> {cls(), kwargs} :: Different Registries for Vision Backbones, LLM Backbones, VLMs ===
 # fmt: off

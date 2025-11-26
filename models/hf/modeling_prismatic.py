@@ -86,8 +86,8 @@ class PrismaticVisionBackbone(nn.Module):
         Args:
             use_fused_vision_backbone: Whether to use two backbones and fuse their features
             image_sizes: List of image sizes for each backbone
-            timm_model_ids: List of TIMM model IDs to use for each backbone
-            timm_override_act_layers: List of activation layer overrides for each backbone
+            timm_model_ids: List of TIMM model IDs to use for each backbone imp
+            timm_override_act_layers: List of activation layer overrides for each backbone imp
         """
         super().__init__()
         self.use_fused_vision_backbone = use_fused_vision_backbone

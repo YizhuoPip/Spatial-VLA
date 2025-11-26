@@ -15,7 +15,7 @@ from huggingface_hub import HfFileSystem, hf_hub_download
 from models.hf.conf import ModelConfig
 from models.hf.materialize import get_llm_backbone_and_tokenizer, get_vision_backbone_and_transform
 from models.hf.conf import GLOBAL_REGISTRY, MODEL_REGISTRY
-from models.vlms import PrismaticVLM
+from models.backbones.vlms import PrismaticVLM
 from overwatch import initialize_overwatch
 from dataset.utils.action_tokenizer import ActionTokenizer
 
