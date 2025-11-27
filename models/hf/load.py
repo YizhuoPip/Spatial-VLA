@@ -1,5 +1,5 @@
 """
-load.py
+load.py done
 
 Entry point for loading pretrained VLMs for inference; exposes functions for listing available models (with canonical
 IDs, mappings to paper experiments, and short descriptions), as well as for loading models (from disk or HF Hub).
@@ -54,7 +54,12 @@ def load(
     cache_dir: Optional[Union[str, Path]] = None,
     load_for_training: bool = False,
 ) -> PrismaticVLM:
-    """Loads a pretrained PrismaticVLM from either local disk or the HuggingFace Hub."""
+    """
+    Loads a pretrained PrismaticVLM from either local disk or the HuggingFace Hub.
+    
+    最主要的是config文件和checkpoint文件; 
+    llm backbone, vision backbone, and vlm 都是在本地定义好的,其实就是结构拼好,然后load 参数
+    """
     if os.path.isdir(model_id_or_path):
         overwatch.info(f"Loading from local path `{(run_dir := Path(model_id_or_path))}`")
 

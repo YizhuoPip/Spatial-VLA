@@ -23,7 +23,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from models.backbones.llm import LLMBackbone
 from models.backbones.llm import PromptBuilder
 from models.backbones.vision import VisionBackbone
-from models.vlms.base_vlm import VLM
+from models.backbones.vlms.base_vlm import VLM
 from overwatch import initialize_overwatch
 from models.utils.nn_utils import FusedMLPProjector, LinearProjector, MLPProjector
 

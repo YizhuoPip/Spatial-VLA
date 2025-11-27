@@ -314,7 +314,7 @@ class PrismaticPreTrainedModel(PreTrainedModel):
         """Check LLM supports SDPA Attention"""
         return self.language_model._supports_sdpa
 
-
+# 上面是继承PrismaticPreTrainedModel，从这里开始和action有关
 class PrismaticForConditionalGeneration(PrismaticPreTrainedModel):
     def __init__(self, config: PrismaticConfig) -> None:
         super().__init__(config)
@@ -460,7 +460,12 @@ class PrismaticForConditionalGeneration(PrismaticPreTrainedModel):
         return projected_patch_embeddings
 
     def _build_multimodal_attention(self, input_embeddings, projected_patch_embeddings, attention_mask):
-        """Build multimodal embeddings and attention mask"""
+        """
+        Build multimodal embeddings and attention mask
+        
+        视觉的序列插入input embeddings, 并且为视觉补丁创建对应的注意力掩码（全部设为 True,表示需要关注）
+        [BOS] + [视觉补丁] + [文本序列的其余部分]
+        """
         # Update attention mask
         projected_patch_attention_mask = None
         if attention_mask is not None:
@@ -485,7 +490,14 @@ class PrismaticForConditionalGeneration(PrismaticPreTrainedModel):
         return multimodal_embeddings, multimodal_attention_mask
 
     def _build_multimodal_labels(self, labels, projected_patch_embeddings):
-        """Build multimodal labels with IGNORE_INDEX for patch embeddings"""
+        """
+        Build multimodal labels with IGNORE_INDEX for patch embeddings
+        
+        创建多模态标签,将IGNORE_INDEX用于patch embeddings
+        - Label：用于监督学习，指导模型学习正确的输出
+        - Mask：用于注意力机制，控制信息流动
+
+        """
         if labels is not None:
             projected_patch_labels = torch.full(
                 (projected_patch_embeddings.shape[0], projected_patch_embeddings.shape[1]),
@@ -620,6 +632,7 @@ class PrismaticForConditionalGeneration(PrismaticPreTrainedModel):
                 # (Later on, the positional embeddings will be added to them)
                 all_actions_mask = all_actions_mask.unsqueeze(-1)  # (B, seq_len, 1)
                 input_embeddings = input_embeddings * ~all_actions_mask
+                # 就是讲action变为0，后续去预测
 
             # Build multimodal embeddings & attention mask
             multimodal_embeddings, multimodal_attention_mask = self._build_multimodal_attention(

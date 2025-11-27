@@ -1,11 +1,11 @@
 data_name=libero_spatial_no_noops
-num_gpu=1
-batch_size=1
+num_gpu=2
+batch_size=2
 lr=2e-4
 steps=150000
-grad_accumulation_steps=8
+grad_accumulation_steps=12
 run_id=$data_name-combine
-CUDA_VISIBLE_DEVICES=2 torchrun --standalone --nnodes 1 --nproc-per-node $num_gpu finetune.py \
+CUDA_VISIBLE_DEVICES=6,7 torchrun --standalone --nnodes 1 --nproc-per-node $num_gpu finetune.py \
 --model_type vla \
 --vlm_path pretrained_models/prism-qwen25-extra-dinosiglip-224px-0_5b \
 --vla_path openvla/openvla-7b \
@@ -29,5 +29,5 @@ CUDA_VISIBLE_DEVICES=2 torchrun --standalone --nnodes 1 --nproc-per-node $num_gp
 --wandb_entity "z-yizhuo-" \
 --wandb_project "$data_name" \
 --run_id_override VLA-Adapter--$data_name\
-2>&1 | tee logs/$run_id.log
+2>&1 | tee logs/train_logs/$run_id.log
 # > logs/VLA-Adapter--libero_spatial_no_noops--$current_time.log 2>&1 

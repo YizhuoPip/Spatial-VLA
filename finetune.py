@@ -873,6 +873,7 @@ def finetune(cfg: FinetuneConfig) -> None:
     if cfg.model_type == 'vlm':
         hf_token = ''
         vlm = load(cfg.vlm_path, hf_token=hf_token, load_for_training=True)
+        #vlm是一个承载器，load 可用的 checkpoint，这个参数最后还是要放回vla，所以最后forward是用的还是vla
         config = AutoConfig.from_pretrained("pretrained_models/configs/config.json")
         vla = AutoModelForVision2Seq.from_config(config, torch_dtype=torch.bfloat16).to(device_id)  # Create a new model with configuration, the parameters are randomly initialized
         # for name, param in model.named_parameters():

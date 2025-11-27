@@ -1,8 +1,9 @@
 """
-materialize.py
+materialize.py done
 
 Factory class for initializing Vision Backbones, LLM Backbones, and VLMs from a set registry; provides and exports
 individual functions for clear control flow.
+相当于是一个dict 从字典去对应这个project中预定义的model架构
 """
 
 from typing import Optional, Tuple
