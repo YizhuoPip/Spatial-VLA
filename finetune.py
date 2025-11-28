@@ -428,6 +428,7 @@ def run_forward_pass(
                     "next_actions_l1_loss": next_actions_l1_loss.item(),
                     "align_loss": align_loss.item(),
                 }
+            )
         else:
             metrics.update(
                 {

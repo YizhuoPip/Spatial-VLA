@@ -11,9 +11,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from vggt.layers import Mlp
-from vggt.layers.block import Block
-from vggt.heads.head_act import activate_pose
+from models.backbones.spatial.vggt.layers import Mlp
+from models.backbones.spatial.vggt.layers.block import Block
+from models.backbones.spatial.vggt.heads.head_act import activate_pose
 
 
 class CameraHead(nn.Module):
