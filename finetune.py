@@ -1,6 +1,8 @@
 import sys
 import os
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+os.environ['HF_HOME'] = '/data1/yizhuo/Spatial-VLA/ckpt'
+os.environ['HUGGINGFACE_HUB_CACHE'] = '/data1/yizhuo/Spatial-VLA/ckpt/hub'
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -886,7 +888,9 @@ def finetune(cfg: FinetuneConfig) -> None:
     vla.vision_backbone.set_num_images_in_input(cfg.num_images_in_input)
 
     if cfg.use_spatial:
-        # load VGGT in val mode to only utilize its feature extractor
+        vggt_model = VGGT.from_pretrained(cfg.vggt_path).aggregator
+        vggt_model = vggt_model.to(device_id)
+        '''
         vggt_model = VGGT(
             enable_camera=False,
             enable_point=False,
@@ -896,6 +900,7 @@ def finetune(cfg: FinetuneConfig) -> None:
         )
         vggt_model.load_state_dict(torch.load(cfg.vggt_path), strict=False)
         vggt_model = vggt_model.to(device_id)
+        '''
 
         align_projector = init_module(
             AlignProjector, "align_projector", cfg, device_id,

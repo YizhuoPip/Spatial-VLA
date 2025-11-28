@@ -9,6 +9,7 @@ CUDA_VISIBLE_DEVICES=4,5 torchrun --standalone --nnodes 1 --nproc-per-node $num_
 --model_type vla \
 --vlm_path pretrained_models/prism-qwen25-extra-dinosiglip-224px-0_5b \
 --vla_path openvla/openvla-7b \
+--vggt_path facebook/VGGT-1B \
 --data_root_dir /data-root \
 --dataset_name $data_name \
 --run_root_dir outputs \
