@@ -12,6 +12,7 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 import tqdm
+import numpy as np
 from accelerate import PartialState
 from huggingface_hub import HfApi, snapshot_download
 from peft import LoraConfig, PeftModel, get_peft_model
@@ -31,17 +32,20 @@ from need.ppp import (
 from models.hf.configuration_prismatic import OpenVLAConfig
 from models.hf.modeling_prismatic import OpenVLAForActionPrediction
 from models.hf.processing_prismatic import PrismaticImageProcessor, PrismaticProcessor
+from models.hf.load import load
 from models.action_heads import L1RegressionActionHead, DiffusionActionHead
+from models.projectors import ProprioProjector, NoisyActionProjector, AlignProjector
 from models.backbones.llm import PurePromptBuilder
+from models.backbones.spatial.vggt.models.vggt import VGGT
+from models.backbones.spatial.vggt.utils.load_fn import preprocess_normed_images
 from models.utils.film_vit_wrapper import FiLMedPrismaticVisionBackbone
-from models.projectors import ProprioProjector, NoisyActionProjector
+from models.utils.pooling_utils import custom_pooling
 from models.utils.action_utils import (
     compute_actions_l1_loss,
     compute_token_accuracy,
     get_current_action_mask,
     get_next_actions_mask
 )
-from models.hf.load import load
 from dataset.utils.data_utils import PaddedCollatorForActionPrediction
 from dataset.utils.action_tokenizer import ActionTokenizer
 from dataset.utils.constants import (
@@ -67,10 +71,11 @@ def model_is_on_hf_hub(model_path: str) -> bool:
 
 @dataclass
 class FinetuneConfig:
-    # fmt: off
+    # pretrain models
     model_type: str = "vlm"
     vla_path: str = "openvla/openvla-7b"     # Path to necessary config files of LA-Adapter
     vlm_path: str = "openvla/openvla-7b"             # Path to OpenVLA model (on HuggingFace Hub or stored locally)
+    vggt_path: str = "official_ckpts/vggt_model.pt"
     
     # Dataset
     data_root_dir: Path = Path("datasets/rlds")      # Directory containing RLDS datasets
@@ -80,11 +85,17 @@ class FinetuneConfig:
 
     # Algorithm and architecture
     use_l1_regression: bool = True                   # If True, trains continuous action head with L1 regression objective
-    use_diffusion: bool = False                      # If True, trains continuous action head with diffusion modeling objective (DDIM)
-    num_diffusion_steps: int = 50                    # (When `diffusion==True`) Number of diffusion steps for training 
-    use_film: bool = False                           # If True, uses FiLM to infuse language inputs into visual features
-    num_images_in_input: int = 1                     # Number of images in the VLA input (default: 1)
     use_proprio: bool = False                        # If True, includes robot proprioceptive state in input
+    use_diffusion: bool = False                      # If True, trains continuous action head with diffusion modeling objective (DDIM)
+    use_film: bool = False                           # If True, uses FiLM to infuse language inputs into visual features
+    use_spatial: bool = False
+    num_diffusion_steps: int = 50                    # (When `diffusion==True`) Number of diffusion steps for training 
+    num_images_in_input: int = 1                     # Number of images in the VLA input (default: 1)
+    vla_layers_align: int = -1                       # which layer of the VLA hidden state to align, 33 for total
+    vggt_layers_align: int = -1                      # which layer of the VGGT hidden state to align, 24 for total
+    align_loss_coeff: float = 0.5
+
+
 
     # Training configuration
     batch_size: int = 8                              # Batch size per device (total batch size = batch_size * num GPUs)
@@ -275,20 +286,26 @@ def init_module(
 
     return wrap_ddp(module, device_id, find_unused_params)
 
-
 def run_forward_pass(
     vla,
     action_head,
+    spatial_model,
     noisy_action_projector,
     proprio_projector,
+    align_projector,
+    layers_align,
+    align_loss_coeff,
     batch,
     action_tokenizer,
+    processor,
     device_id,
     use_l1_regression,
     use_diffusion,
     use_proprio,
     use_film,
+    use_spatial,
     num_patches,
+    num_images_in_input,
     compute_diffusion_l1=False,
     num_diffusion_steps_train=None,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
@@ -354,6 +371,35 @@ def run_forward_pass(
     current_action_mask = get_current_action_mask(ground_truth_token_ids)
     next_actions_mask = get_next_actions_mask(ground_truth_token_ids)
 
+    if use_spatial:
+        # vla hidden states
+        projected_embeddings = output.projector_features
+        vision_length = projected_embeddings.shape[-2] - 1 if use_proprio else projected_embeddings.shape[-2]
+        vla_hidden = output.hidden_states[layers_align[0]]  # 33 for total layers of VLA-7B
+        boi_ids = 2
+        vision_hidden = vla_hidden[:, boi_ids: vision_length+boi_ids, :].clone()  # [bs, 512, 4096]
+
+        # VGGT hidden states
+        spatial_model.eval()
+        unnorm_imgs = preprocess_normed_images(
+            batch['pixel_values'], processor.image_processor, num_images_in_input
+        ).to(device_id)
+        with torch.autocast("cuda", dtype=torch.bfloat16), torch.no_grad():
+            vggt_output = spatial_model(unnorm_imgs)
+        agg_vggt_hidden = vggt_output["features"][layers_align[1]]  # 24 for total layers of VGGT
+        patch_start_idx = vggt_output["patch_start_idx"]
+        original_img = vggt_output["images"]
+        vggt_hidden = agg_vggt_hidden[:, :, patch_start_idx:, :]
+
+        # Resample VGGT hidden states to match the resolution of VLA hidden states
+        H, W = original_img.shape[-2:]
+        patch_h, patch_w = H // spatial_model.patch_size, W // spatial_model.patch_size
+        vggt_hidden = custom_pooling(vggt_hidden, (patch_h, patch_w), (H, W), vision_hidden, "bilinear", True)
+
+        # calculate align loss
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            align_loss = align_projector(vision_hidden, vggt_hidden)
+    
     # Compute metrics for discrete action representation (next-token prediction)
     if not (use_l1_regression or use_diffusion):
         loss = output.loss
@@ -370,15 +416,26 @@ def run_forward_pass(
         next_actions_l1_loss = compute_actions_l1_loss(
             action_tokenizer, predicted_token_ids, ground_truth_token_ids, mask=next_actions_mask
         )
-        metrics.update(
-            {
-                "loss_value": loss.item(),  # Detached value for logging
-                "curr_action_accuracy": curr_action_accuracy.item(),
-                "curr_action_l1_loss": curr_action_l1_loss.item(),
-                "next_actions_accuracy": next_actions_accuracy.item(),
-                "next_actions_l1_loss": next_actions_l1_loss.item(),
-            }
-        )
+        if use_spatial:
+            metrics.update(
+                {
+                    "loss_value": loss.item(),  # Detached value for logging
+                    "curr_action_accuracy": curr_action_accuracy.item(),
+                    "curr_action_l1_loss": curr_action_l1_loss.item(),
+                    "next_actions_accuracy": next_actions_accuracy.item(),
+                    "next_actions_l1_loss": next_actions_l1_loss.item(),
+                    "align_loss": align_loss.item(),
+                }
+        else:
+            metrics.update(
+                {
+                    "loss_value": loss.item(),  # Detached value for logging
+                    "curr_action_accuracy": curr_action_accuracy.item(),
+                    "curr_action_l1_loss": curr_action_l1_loss.item(),
+                    "next_actions_accuracy": next_actions_accuracy.item(),
+                    "next_actions_l1_loss": next_actions_l1_loss.item(),
+                }
+            )
     # Compute metrics for continuous action representations (L1 regression | diffusion)
     else:
         # Get last layer hidden states
@@ -424,12 +481,19 @@ def run_forward_pass(
                         use_proprio=use_proprio,
                         use_film=use_film,
                     )
-
-        metrics.update(
-            {
-                "loss_value": loss.item(),  # Detached value for logging
-            }
-        )
+        if use_spatial:
+            metrics.update(
+                {
+                    "loss_value": loss.item(),  # Detached value for logging
+                    "align_loss": align_loss.item(),
+                }
+            )
+        else:
+            metrics.update(
+                {
+                    "loss_value": loss.item(),  # Detached value for logging
+                }
+            )
 
         # Get detailed L1 losses for logging
         should_log_l1_loss = not use_diffusion or (use_diffusion and compute_diffusion_l1)
@@ -448,7 +512,7 @@ def run_forward_pass(
             )
 
     # Return both the loss tensor (with gradients) and the metrics dictionary (with detached values)
-    return loss, metrics
+    return loss + align_loss * align_loss_coeff, metrics
 
 
 def run_diffusion_sampling(
@@ -585,6 +649,7 @@ def log_metrics_to_wandb(metrics, prefix, step, wandb_entity) -> None:
 
 
 
+
 def save_training_checkpoint(
     cfg,
     run_dir,
@@ -596,103 +661,8 @@ def save_training_checkpoint(
     action_head,
     train_dataset,
     distributed_state,
-    new_state_dict,
-    
 ) -> None:
-    """
-    Save all training checkpoints including model components, LoRA adapter, and dataset statistics.
-
-    Args:
-        cfg (FinetuneConfig): Training configuration.
-        run_dir (Path): Experiment run directory path.
-        log_step (int): Current logging step.
-        vla (OpenVLAForActionPrediction): Vision-language-action policy.
-        processor (PrismaticProcessor): OpenVLA inputs processor.
-        proprio_projector (nn.Module): Proprioceptive state projector module.
-        noisy_action_projector (nn.Module): Noisy action projector module (only used for diffusion).
-        action_head (nn.Module): Action head module.
-        train_dataset (RLDSDataset): Training dataset.
-        distributed_state (PartialState): Distributed training state.
-
-    Returns:
-        None.
-    """
-    # Determine checkpoint paths and naming
-    if cfg.save_latest_checkpoint_only:
-        checkpoint_dir = run_dir
-        checkpoint_name_suffix = "latest_checkpoint.pt"
-    else:
-        checkpoint_dir = Path(str(run_dir) + f"--{log_step}_chkpt")
-        checkpoint_name_suffix = f"{log_step}_checkpoint.pt"
-
-    adapter_dir = checkpoint_dir / "lora_adapter"
-
-    # Create directories and save dataset statistics (main process only)
-    if distributed_state.is_main_process:
-        os.makedirs(checkpoint_dir, exist_ok=True)
-        os.makedirs(adapter_dir, exist_ok=True)
-        print(f"Saving Model Checkpoint for Step {log_step}")
-
-    # Wait for directories to be created
-    dist.barrier()
-
-    # Save model components (main process only)
-    if distributed_state.is_main_process:
-        # Save processor and LoRA adapter
-        processor.save_pretrained(checkpoint_dir)
-
-        if cfg.use_fz:
-            vla.module.save_pretrained(checkpoint_dir) # directly save checkpoint without lora
-        else:
-            vla.module.save_pretrained(adapter_dir)
-
-        # Save other components
-        if cfg.use_proprio and proprio_projector is not None:
-            torch.save(proprio_projector.state_dict(), checkpoint_dir / f"proprio_projector--{checkpoint_name_suffix}")
-
-        if cfg.use_diffusion and noisy_action_projector is not None:
-            torch.save(
-                noisy_action_projector.state_dict(), checkpoint_dir / f"noisy_action_projector--{checkpoint_name_suffix}"
-            )
-
-        if cfg.use_l1_regression and action_head is not None:
-            torch.save(action_head.state_dict(), checkpoint_dir / f"action_head--{checkpoint_name_suffix}")
-
-        if cfg.use_film:
-            # To be safe, just save the entire vision backbone (not just FiLM components)
-            torch.save(
-                vla.module.vision_backbone.state_dict(), checkpoint_dir / f"vision_backbone--{checkpoint_name_suffix}"
-            )
-        print(checkpoint_dir)
-
-    # Wait for model components to be saved
-    dist.barrier()
-
-    # Merge LoRA weights into base model and save resulting model checkpoint
-    # Note: Can be very slow on some devices; if so, we recommend merging offline
-    if cfg.use_lora and cfg.merge_lora_during_training:
-        if cfg.use_minivlm:
-            config = AutoConfig.from_pretrained("pretrained_models/configs/config.json")
-            base_vla = AutoModelForVision2Seq.from_config(config, torch_dtype=torch.bfloat16)  # Create a new model with configuration, the parameters are randomly initialized
-            # print(new_state_dict['action_queries.weight'])
-            new_state_dict['action_queries.weight'] = vla.state_dict()['module.base_model.model.action_queries.weight'].cpu()
-            missing_keys, unexpected_keys = base_vla.load_state_dict(new_state_dict, strict=False)
-            
-        else:
-            base_vla = AutoModelForVision2Seq.from_pretrained(
-            cfg.config_file_path, torch_dtype=torch.bfloat16, low_cpu_mem_usage=False, trust_remote_code=False
-        )
-
-
-        merged_vla = PeftModel.from_pretrained(base_vla, adapter_dir)
-        merged_vla = merged_vla.merge_and_unload()
-
-        if distributed_state.is_main_process:
-            merged_vla.save_pretrained(checkpoint_dir)
-            print(f"Saved merged model for Step {log_step} at: {checkpoint_dir}")
-        
-        # Wait for merged model to be saved
-        dist.barrier()
+   pass
 
 
 
@@ -915,7 +885,27 @@ def finetune(cfg: FinetuneConfig) -> None:
     # Set number of images in VLA input
     vla.vision_backbone.set_num_images_in_input(cfg.num_images_in_input)
 
-    # vla.set_version(cfg.version)
+    if cfg.use_spatial:
+        # load VGGT in val mode to only utilize its feature extractor
+        vggt_model = VGGT(
+            enable_camera=False,
+            enable_point=False,
+            enable_depth=False,
+            enable_track=False,
+            feature_only=True,
+        )
+        vggt_model.load_state_dict(torch.load(cfg.vggt_path), strict=False)
+        vggt_model = vggt_model.to(device_id)
+
+        align_projector = init_module(
+            AlignProjector, "align_projector", cfg, device_id,
+            {"llm_dim": vla.module.llm_dim,
+            "vggt_dim": vggt_model.embed_dim,
+            "align_loss_type": cfg.align_loss_type,
+            "use_vlm_norm": cfg.use_vlm_norm,}
+        )
+
+        # vla.set_version(cfg.version)
 
     if cfg.use_lora:
         lora_config = LoraConfig(
@@ -1015,12 +1005,13 @@ def finetune(cfg: FinetuneConfig) -> None:
         trainable_params += [param for param in noisy_action_projector.parameters() if param.requires_grad]
     if cfg.use_proprio:
         trainable_params += [param for param in proprio_projector.parameters() if param.requires_grad]
+    if cfg.use_spatial:
+        trainable_params += [param for param in align_projector.parameters() if param.requires_grad]
     print(f"# total trainable params: {sum(p.numel() for p in trainable_params)}")
     optimizer = AdamW(trainable_params, lr=cfg.learning_rate)
 
     # Record original learning rate
     original_lr = optimizer.param_groups[0]["lr"]
-    # Create learning rate scheduler
     # Create learning rate scheduler
     if cfg.scheduler == 'MultiStepLR':
         scheduler = MultiStepLR(
@@ -1088,13 +1079,23 @@ def finetune(cfg: FinetuneConfig) -> None:
         )
 
     # Deque to store recent train metrics (used for computing smoothened metrics for gradient accumulation)
-    recent_metrics = {
-        "loss_value": deque(maxlen=cfg.grad_accumulation_steps),
-        "curr_action_accuracy": deque(maxlen=cfg.grad_accumulation_steps),
-        "curr_action_l1_loss": deque(maxlen=cfg.grad_accumulation_steps),
-        "next_actions_accuracy": deque(maxlen=cfg.grad_accumulation_steps),
-        "next_actions_l1_loss": deque(maxlen=cfg.grad_accumulation_steps),
-    }
+    if cfg.use_spatial:
+            recent_metrics = {
+            "loss_value": deque(maxlen=cfg.grad_accumulation_steps),
+            "curr_action_accuracy": deque(maxlen=cfg.grad_accumulation_steps),
+            "curr_action_l1_loss": deque(maxlen=cfg.grad_accumulation_steps),
+            "next_actions_accuracy": deque(maxlen=cfg.grad_accumulation_steps),
+            "next_actions_l1_loss": deque(maxlen=cfg.grad_accumulation_steps),
+            "align_loss": deque(maxlen=cfg.grad_accumulation_steps),
+        }
+    else:
+        recent_metrics = {
+            "loss_value": deque(maxlen=cfg.grad_accumulation_steps),
+            "curr_action_accuracy": deque(maxlen=cfg.grad_accumulation_steps),
+            "curr_action_l1_loss": deque(maxlen=cfg.grad_accumulation_steps),
+            "next_actions_accuracy": deque(maxlen=cfg.grad_accumulation_steps),
+            "next_actions_l1_loss": deque(maxlen=cfg.grad_accumulation_steps),
+        }
 
     # Start training
     with tqdm.tqdm(total=cfg.max_steps, leave=False) as progress:
@@ -1106,16 +1107,23 @@ def finetune(cfg: FinetuneConfig) -> None:
             loss, metrics = run_forward_pass(
                 vla=vla,
                 action_head=action_head,
+                spatial_model=vggt_model if cfg.use_spatial else None,
                 noisy_action_projector=noisy_action_projector if cfg.use_diffusion else None,
                 proprio_projector=proprio_projector if cfg.use_proprio else None,
+                align_projector = align_projector if cfg.use_spatial else None,
+                layers_align=(cfg.vla_layers_align, cfg.vggt_layers_align) if cfg.use_spatial else None,
+                align_loss_coeff=cfg.align_loss_coeff if cfg.use_spatial else 0.0,
                 batch=batch,
                 action_tokenizer=action_tokenizer,
+                processor=processor if cfg.use_spatial else None,
                 device_id=device_id,
                 use_l1_regression=cfg.use_l1_regression,
                 use_diffusion=cfg.use_diffusion,
                 use_proprio=cfg.use_proprio,
                 use_film=cfg.use_film,
+                use_spatial=cfg.use_spatial,
                 num_patches=NUM_PATCHES,
+                num_images_in_input=cfg.num_images_in_input if cfg.use_spatial else None,
                 compute_diffusion_l1=compute_diffusion_l1,
                 num_diffusion_steps_train=cfg.num_diffusion_steps_train if cfg.use_diffusion else None,
             )
