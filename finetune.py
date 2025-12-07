@@ -35,7 +35,7 @@ from models.hf.configuration_prismatic import OpenVLAConfig
 from models.hf.modeling_prismatic import OpenVLAForActionPrediction
 from models.hf.processing_prismatic import PrismaticImageProcessor, PrismaticProcessor
 from models.hf.load import load
-from models.action_heads import L1RegressionActionHead, DiffusionActionHead
+from models.action_heads import L1RegressionActionHead, DiffusionActionHead, FullInjectActionHead
 from models.projectors import ProprioProjector, NoisyActionProjector, AlignProjector
 from models.backbones.llm import PurePromptBuilder
 from models.backbones.spatial.vggt.models.vggt import VGGT
@@ -87,6 +87,7 @@ class FinetuneConfig:
 
     # Algorithm and architecture
     use_l1_regression: bool = True                   # If True, trains continuous action head with L1 regression objective
+    use_full_injection: bool = False
     use_proprio: bool = False                        # If True, includes robot proprioceptive state in input
     use_diffusion: bool = False                      # If True, trains continuous action head with diffusion modeling objective (DDIM)
     use_film: bool = False                           # If True, uses FiLM to infuse language inputs into visual features
@@ -289,6 +290,7 @@ def init_module(
     return wrap_ddp(module, device_id, find_unused_params)
 
 def run_forward_pass(
+    phase,
     vla,
     action_head,
     spatial_model,
@@ -303,6 +305,7 @@ def run_forward_pass(
     device_id,
     use_l1_regression,
     use_diffusion,
+    use_full_injection,
     use_proprio,
     use_film,
     use_spatial,
@@ -403,7 +406,30 @@ def run_forward_pass(
             align_loss = align_projector(vision_hidden, vggt_hidden)
     
     # Compute metrics for discrete action representation (next-token prediction)
-    if not (use_l1_regression or use_diffusion):
+    if use_full_injection:
+        multi_layer_hidden_states = []
+
+        for item in output.hidden_states:
+            text_hidden_states = item[:, num_patches:-1]
+            # Get hidden states for action portion of response
+            batch_size = batch["input_ids"].shape[0]
+            # actions_hidden_states = text_hidden_states[:, -1, :].reshape(batch_size, 1, -1).to(torch.bfloat16)
+            actions_hidden_states = text_hidden_states[current_action_mask | next_actions_mask].reshape(batch_size, 1, NUM_ACTIONS_CHUNK * ACTION_DIM, -1).to(torch.bfloat16)
+            task_latten_states = item[:, :num_patches].reshape(batch_size, 1, num_patches , -1)
+            all_hidden_states = torch.cat((task_latten_states, actions_hidden_states),2) # oral feature + action feature
+            multi_layer_hidden_states.append(all_hidden_states)
+        multi_layer_hidden_states = torch.cat(multi_layer_hidden_states, dim = 1)
+
+        predicted_actions = action_head.module.predict_action(
+            multi_layer_hidden_states,
+            proprio=batch["proprio"] if use_proprio else None,
+            proprio_projector=proprio_projector if use_proprio else None,
+            phase=phase
+            )
+
+        loss = torch.nn.L1Loss()(predicted_actions, ground_truth_actions)
+
+    elif not (use_l1_regression or use_diffusion):
         loss = output.loss
         predicted_token_ids = output.logits[:, num_patches:-1].argmax(dim=2)
         curr_action_accuracy = compute_token_accuracy(
@@ -499,7 +525,7 @@ def run_forward_pass(
             )
 
         # Get detailed L1 losses for logging
-        should_log_l1_loss = not use_diffusion or (use_diffusion and compute_diffusion_l1)
+        should_log_l1_loss = not use_diffusion or (use_diffusion and compute_diffusion_l1) or use_full_injection
         if should_log_l1_loss:
             ground_truth_curr_action = ground_truth_actions[:, 0]
             predicted_curr_action = predicted_actions[:, 0]
@@ -507,6 +533,9 @@ def run_forward_pass(
             predicted_next_actions = predicted_actions[:, 1:]
             curr_action_l1_loss = torch.nn.L1Loss()(ground_truth_curr_action, predicted_curr_action)
             next_actions_l1_loss = torch.nn.L1Loss()(ground_truth_next_actions, predicted_next_actions)
+            if compute_diffusion_l1:
+                print('curr: ',curr_action_l1_loss.item())
+                # print('next: ',next_actions_l1_loss.item())
             metrics.update(
                 {
                     "curr_action_l1_loss": curr_action_l1_loss.item(),
@@ -888,31 +917,6 @@ def finetune(cfg: FinetuneConfig) -> None:
     # Set number of images in VLA input
     vla.vision_backbone.set_num_images_in_input(cfg.num_images_in_input)
 
-    if cfg.use_spatial:
-        vggt_model = VGGT.from_pretrained(cfg.vggt_path).aggregator
-        vggt_model = vggt_model.to(device_id)
-        '''
-        vggt_model = VGGT(
-            enable_camera=False,
-            enable_point=False,
-            enable_depth=False,
-            enable_track=False,
-            feature_only=True,
-        )
-        vggt_model.load_state_dict(torch.load(cfg.vggt_path), strict=False)
-        vggt_model = vggt_model.to(device_id)
-        '''
-
-        align_projector = init_module(
-            AlignProjector, "align_projector", cfg, device_id,
-            {"llm_dim": vla.module.llm_dim,
-            "vggt_dim": vggt_model.embed_dim,
-            "align_loss_type": cfg.align_loss_type,
-            "use_vlm_norm": cfg.use_vlm_norm,}
-        )
-
-        # vla.set_version(cfg.version)
-
     if cfg.use_lora:
         lora_config = LoraConfig(
             r=cfg.lora_rank,
@@ -949,6 +953,31 @@ def finetune(cfg: FinetuneConfig) -> None:
     # Wrap VLA with DDP
     vla = wrap_ddp(vla, device_id, find_unused=True)
 
+    if cfg.use_spatial:
+        '''
+        vggt_model = VGGT.from_pretrained(cfg.vggt_path).aggregator
+        vggt_model = vggt_model.to(device_id)
+        '''
+        vggt_model = VGGT(
+            enable_camera=False,
+            enable_point=False,
+            enable_depth=False,
+            enable_track=False,
+            feature_only=True,
+        )
+        #vggt_model.load_state_dict(torch.load(cfg.vggt_path), strict=False)
+        vggt_model = vggt_model.to(device_id)
+
+        align_projector = init_module(
+            AlignProjector, "align_projector", cfg, device_id,
+            {"llm_dim": vla.module.llm_dim,
+            "vggt_dim": vggt_model.embed_dim,
+            "align_loss_type": "cosine",
+            "use_vlm_norm": True,}
+        )
+
+        # vla.set_version(cfg.version)
+
     # If applicable, instantiate proprio projector
     if cfg.use_proprio:
         proprio_projector = init_module(
@@ -958,6 +987,21 @@ def finetune(cfg: FinetuneConfig) -> None:
             device_id,
             {"llm_dim": vla.module.llm_dim, "proprio_dim": PROPRIO_DIM},
             to_bf16=True,
+        )
+
+    if cfg.use_full_injection:
+        action_head = init_module(
+        FullInjectActionHead,
+        "action_head",
+        cfg,
+        device_id,
+        {
+            "input_dim": vla.module.llm_dim, 
+            "hidden_dim": vla.module.llm_dim, 
+            "action_dim": ACTION_DIM,
+            "use_pro_version": True,
+            },
+        to_bf16=True,
         )
 
     # If applicable, instantiate continuous action head for L1 regression
@@ -996,6 +1040,7 @@ def finetune(cfg: FinetuneConfig) -> None:
 
     # Get number of vision patches
     NUM_PATCHES = vla.module.vision_backbone.get_num_patches() * vla.module.vision_backbone.get_num_images_in_input()
+    # 512
    # If we have proprio inputs, a single proprio embedding is appended to the end of the vision patch embeddings
     if cfg.use_proprio:
         NUM_PATCHES += 1
@@ -1102,7 +1147,6 @@ def finetune(cfg: FinetuneConfig) -> None:
             "next_actions_accuracy": deque(maxlen=cfg.grad_accumulation_steps),
             "next_actions_l1_loss": deque(maxlen=cfg.grad_accumulation_steps),
         }
-
     # Start training
     with tqdm.tqdm(total=cfg.max_steps, leave=False) as progress:
         vla.train()
@@ -1111,6 +1155,7 @@ def finetune(cfg: FinetuneConfig) -> None:
             # Compute training metrics and loss
             compute_diffusion_l1 = cfg.use_diffusion and batch_idx % cfg.diffusion_sample_freq == 0
             loss, metrics = run_forward_pass(
+                phase="Training",
                 vla=vla,
                 action_head=action_head,
                 spatial_model=vggt_model if cfg.use_spatial else None,
@@ -1125,6 +1170,7 @@ def finetune(cfg: FinetuneConfig) -> None:
                 device_id=device_id,
                 use_l1_regression=cfg.use_l1_regression,
                 use_diffusion=cfg.use_diffusion,
+                use_full_injection=cfg.use_full_injection,
                 use_proprio=cfg.use_proprio,
                 use_film=cfg.use_film,
                 use_spatial=cfg.use_spatial,

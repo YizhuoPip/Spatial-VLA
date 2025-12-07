@@ -1,9 +1,9 @@
 data_name=libero_spatial_no_noops
 num_gpu=2
-batch_size=4
+batch_size=2
 lr=2e-4
 steps=150000
-grad_accumulation_steps=8
+grad_accumulation_steps=16
 run_id=$data_name-combine
 CUDA_VISIBLE_DEVICES=4,5 torchrun --standalone --nnodes 1 --nproc-per-node $num_gpu finetune.py \
 --model_type vla \
@@ -18,6 +18,8 @@ CUDA_VISIBLE_DEVICES=4,5 torchrun --standalone --nnodes 1 --nproc-per-node $num_
 --use_proprio True \
 --use_lora True \
 --use_spatial True \
+--use_full_injection True \
+--use_l1_regression False \
 --vla_layers_align 24 \
 --vggt_layers_align -1 \
 --align_loss_coeff 0.5 \
