@@ -357,6 +357,10 @@ class PrismaticForConditionalGeneration(PrismaticPreTrainedModel):
         self.pad_token_id = config.pad_token_id
         self.llm_dim = config.text_config.hidden_size
 
+        #Action query token
+        self.action_queries = nn.Embedding(NUM_ACTIONS_CHUNK * ACTION_DIM, self.llm_dim)
+        self.action_queries.weight.data.zero_()
+
         # HF Boilerplate =>> initializes weights via `_init_weights()` and sets gradient checkpointing
         self.post_init()
 
@@ -630,9 +634,17 @@ class PrismaticForConditionalGeneration(PrismaticPreTrainedModel):
             else:
                 # Replace the embeddings of the action tokens with zeros
                 # (Later on, the positional embeddings will be added to them)
+                '''
                 all_actions_mask = all_actions_mask.unsqueeze(-1)  # (B, seq_len, 1)
                 input_embeddings = input_embeddings * ~all_actions_mask
                 # 就是讲action变为0，后续去预测
+                '''
+                action_queries = self.action_queries.weight  # (1, h)
+                action_queries = action_queries.view(1, action_queries.shape[0], action_queries.shape[1]).repeat(input_embeddings.shape[0], 1, 1)  # (b, chunk_size, h)
+                all_actions_mask = self._process_action_masks(labels)
+                input_embeddings = self._replace_input_embeddings(
+                input_embeddings, all_actions_mask, action_queries)
+
 
             # Build multimodal embeddings & attention mask
             multimodal_embeddings, multimodal_attention_mask = self._build_multimodal_attention(
@@ -900,9 +912,16 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
         action_head=None,
     ):
         """Run L1 regression-based continuous action prediction or discrete action tokens prediction."""
+        '''
         # Zero out action token embeddings
         all_actions_mask = all_actions_mask.unsqueeze(-1)  # (B, seq_len, 1)
         input_embeddings = input_embeddings * ~all_actions_mask
+        '''
+        action_queries = self.action_queries.weight  # (1, h)
+        action_queries = action_queries.view(1, action_queries.shape[0], action_queries.shape[1]).repeat(input_embeddings.shape[0], 1, 1)  # (b, chunk_size, h)
+        # Replace action token embeddings with noisy action embeddings
+        input_embeddings = self._replace_input_embeddings(input_embeddings.clone(), all_actions_mask, action_queries)
+
 
         # Build multimodal embeddings and attention mask
         multimodal_embeddings, multimodal_attention_mask = self._build_multimodal_attention(
