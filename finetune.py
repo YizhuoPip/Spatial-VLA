@@ -26,7 +26,7 @@ from transformers import AutoConfig, AutoImageProcessor, AutoModelForVision2Seq,
 from transformers.modeling_outputs import CausalLMOutputWithPast
 import wandb
 
-from need.ppp import (
+from models.utils.eval_utils import (
     check_model_logic_mismatch,
     model_is_on_hf_hub,
     update_auto_map
@@ -48,8 +48,16 @@ from models.utils.action_utils import (
     get_current_action_mask,
     get_next_actions_mask
 )
+from models.utils.train_utils import (
+    compute_smoothened_metrics,
+    count_parameters,
+    log_metrics_to_wandb,
+    remove_ddp_in_checkpoint,
+    wrap_ddp
+)
 from dataset.utils.data_utils import PaddedCollatorForActionPrediction
 from dataset.utils.action_tokenizer import ActionTokenizer
+from dataset.utils.rlds.utils.data_utils import save_dataset_statistics
 from dataset.utils.constants import (
     ACTION_DIM,
     ACTION_PROPRIO_NORMALIZATION_TYPE,
@@ -60,15 +68,6 @@ from dataset import get_vla_dataset_and_collator
 
 # Sane Defaults
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-def model_is_on_hf_hub(model_path: str) -> bool:
-    """Checks whether a model path points to a model on Hugging Face Hub."""
-    # If the API call below runs without error, the model is on the hub
-    try:
-        HfApi().model_info(model_path)
-        return True
-    except Exception:
-        return False
 
 
 @dataclass
@@ -98,8 +97,6 @@ class FinetuneConfig:
     vggt_layers_align: int = -1                      # which layer of the VGGT hidden state to align, 24 for total
     align_loss_coeff: float = 0.5
 
-
-
     # Training configuration
     batch_size: int = 8                              # Batch size per device (total batch size = batch_size * num GPUs)
     learning_rate: float = 5e-4                      # Learning rate
@@ -126,39 +123,12 @@ class FinetuneConfig:
     merge_lora_during_training: bool = False         # If True, merges LoRA weights and saves result during training
                                                      #   Note: Merging can be very slow on some machines. If so, set to
                                                      #         False and merge final checkpoint offline!
-
     # Logging
     wandb_entity: str = "your-wandb-entity"          # Name of WandB entity
     wandb_project: str = "your-wandb-project"        # Name of WandB project
     run_id_note: Optional[str] = None                # Extra note to add to end of run ID for logging
     run_id_override: Optional[str] = None            # Optional string to override the run ID with
     wandb_log_freq: int = 10                         # WandB logging frequency in steps
-
-
-def remove_ddp_in_checkpoint(state_dict) -> dict:
-    """
-    Removes the 'module.' prefix from parameter names in a PyTorch model state dictionary that was saved using
-    DistributedDataParallel (DDP).
-
-    When a model is trained using PyTorch's DistributedDataParallel, the saved state dictionary contains parameters
-    prefixed with 'module.'. This function removes these prefixes to make the state dictionary compatible when
-    loading into models that are not yet wrapped in DDP.
-
-    Args:
-        state_dict (dict): PyTorch model state dictionary.
-
-    Returns:
-        dict: A new state dictionary with the same contents but with 'module.' prefixes removed from parameter names.
-              Parameters without the 'module.' prefix remain unchanged.
-    """
-    new_state_dict = {}
-    for k, v in state_dict.items():
-        if k[:7] == "module.":
-            new_state_dict[k[7:]] = v
-        else:
-            new_state_dict[k] = v
-    return new_state_dict
-
 
 
 def get_run_id(cfg) -> str:
@@ -186,8 +156,6 @@ def get_run_id(cfg) -> str:
             f"+b{cfg.batch_size * cfg.grad_accumulation_steps}"
             f"+lr-{cfg.learning_rate}"
         )
-        if cfg.use_fz:
-            run_id += f"+frozen+dropout-{cfg.lora_dropout}"
         if cfg.use_lora:
             run_id += f"+lora-r{cfg.lora_rank}+dropout-{cfg.lora_dropout}"
         if cfg.image_aug:
@@ -195,40 +163,6 @@ def get_run_id(cfg) -> str:
         if cfg.run_id_note is not None:
             run_id += f"--{cfg.run_id_note}"
     return run_id
-
-
-def wrap_ddp(module: nn.Module, device_id: int, find_unused: bool = False) -> DDP:
-    """
-    Wrap a module with DistributedDataParallel.
-
-    Args:
-        module (nn.Module): PyTorch module.
-        device_id (str): Device ID.
-        find_unused (bool): Whether to detect parameters without gradients in distributed training.
-
-    Returns:
-        DistributedDataParallel: PyTorch module wrapped with DDP.
-    """
-    return DDP(module, device_ids=[device_id], find_unused_parameters=find_unused, gradient_as_bucket_view=True)
-
-
-
-def count_parameters(module: nn.Module, name: str) -> None:
-    """
-    Counts and prints the number of trainable parameters in a module.
-
-    Args:
-        module (nn.Module): PyTorch module.
-        module_name (str): Name of model component.
-
-    Returns:
-        None.
-    """
-    num_params = sum(p.numel() for p in module.parameters() if p.requires_grad)
-    
-    print(f"# trainable params in {name}: {num_params}")
-
-
 
 def init_module(
     module_class: Type[nn.Module],
@@ -267,6 +201,111 @@ def init_module(
     module = module.to(device_id)
 
     return wrap_ddp(module, device_id, find_unused_params)
+
+def load_checkpoint(module_name: str, path: str, step: int, device: str = "cpu") -> dict:
+    """
+    Loads a checkpoint for a given module.
+
+    Args:
+        module_name (str): Name of model component to load checkpoint for.
+        path (str): Path to checkpoint directory.
+        step (int): Gradient step number of saved checkpoint.
+        device (str): String specifying how to remap storage locations (default = "cpu").
+
+    Returns:
+        dict: PyTorch model state dictionary.
+    """
+    checkpoint_path = os.path.join(path, f"{module_name}--{step}_checkpoint.pt")
+    print(f"Loading checkpoint: {checkpoint_path}")
+    state_dict = torch.load(checkpoint_path, weights_only=True, map_location=device)
+    return remove_ddp_in_checkpoint(state_dict)
+
+def save_training_checkpoint(
+    cfg,
+    run_dir,
+    log_step,
+    vla,
+    processor,
+    proprio_projector,
+    noisy_action_projector,
+    align_projector,
+    action_head,
+    train_dataset,
+    distributed_state,
+    new_state_dict,
+) -> None:
+   
+    if cfg.save_latest_checkpoint_only:
+        checkpoint_dir = run_dir
+        checkpoint_name_suffix = "latest_checkpoint.pt"
+    else:
+        checkpoint_dir = Path(str(run_dir) + f"--{log_step}_chkpt")
+        checkpoint_name_suffix = f"{log_step}_checkpoint.pt"
+    
+    adapter_dir = checkpoint_dir / "lora_adapter"
+
+    if distributed_state.is_main_process:
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        os.makedirs(adapter_dir, exist_ok=True)
+        save_dataset_statistics(train_dataset.dataset_statistics, checkpoint_dir)
+        print(f"Saving Model Checkpoint for Step {log_step}")
+    dist.barrier()
+
+    if distributed_state.is_main_process:
+        # Save processor and LoRA adapter
+        processor.save_pretrained(checkpoint_dir)
+        vla.module.save_pretrained(adapter_dir)
+
+        # Save other components
+        if cfg.use_proprio and proprio_projector is not None:
+            torch.save(proprio_projector.state_dict(), checkpoint_dir / f"proprio_projector--{checkpoint_name_suffix}")
+        
+        if cfg.use_diffusion and noisy_action_projector is not None:
+            torch.save(
+                noisy_action_projector.state_dict(), checkpoint_dir / f"noisy_action_projector--{checkpoint_name_suffix}"
+            )
+
+        if cfg.use_film:
+            # To be safe, just save the entire vision backbone (not just FiLM components)
+            torch.save(
+                vla.module.vision_backbone.state_dict(), checkpoint_dir / f"vision_backbone--{checkpoint_name_suffix}"
+            )
+        
+        if cfg.use_spatial and align_projector is not None:
+            torch.save(align_projector.state_dict(), checkpoint_dir / f"align_projector--{checkpoint_name_suffix}")
+
+        if (cfg.use_l1_regression or cfg.use_diffusion or cfg.use_full_injection) and action_head is not None:
+            torch.save(action_head.state_dict(), checkpoint_dir / f"action_head--{checkpoint_name_suffix}")
+
+    dist.barrier()
+
+    if cfg.use_lora and cfg.merge_lora_during_training:
+        if cfg.model_type == "vlm":
+            config = AutoConfig.from_pretrained("pretrained_models/configs/config.json")
+            base_vla = AutoModelForVision2Seq.from_config(config, torch_dtype=torch.bfloat16)  # Create a new model with configuration, the parameters are randomly initialized
+            # print(new_state_dict['action_queries.weight'])
+            '''
+            action query
+            new_state_dict['action_queries.weight'] = vla.state_dict()['module.base_model.model.action_queries.weight'].cpu()
+            missing_keys, unexpected_keys = base_vla.load_state_dict(new_state_dict, strict=False)
+            '''
+            
+        else:
+            base_vla = AutoModelForVision2Seq.from_pretrained(
+            cfg.config_file_path, torch_dtype=torch.bfloat16, low_cpu_mem_usage=False, trust_remote_code=False
+        )
+
+
+        merged_vla = PeftModel.from_pretrained(base_vla, adapter_dir)
+        merged_vla = merged_vla.merge_and_unload()
+
+        if distributed_state.is_main_process:
+            merged_vla.save_pretrained(checkpoint_dir)
+            print(f"Saved merged model for Step {log_step} at: {checkpoint_dir}")
+        
+        # Wait for merged model to be saved
+        dist.barrier()
+
 
 def run_forward_pass(
     phase,
@@ -598,87 +637,6 @@ def run_diffusion_sampling(
 
     return curr_noisy_actions.reshape(actions_shape)
 
-
-
-
-def compute_smoothened_metrics(metrics_deques) -> dict:
-    """
-    Compute smoothened metrics from recent deques.
-
-    Args:
-        metrics_deques (dict): Dictionary of deques containing recent metrics.
-
-    Returns:
-        dict: Dictionary of smoothened metrics.
-    """
-    #print(metrics_deques)
-    smoothened_metrics = {}
-    for name, deque in metrics_deques.items():
-        if deque and len(deque) > 0:
-            smoothened_metrics[name] = sum(deque) / len(deque)
-    return smoothened_metrics
-
-
-
-def log_metrics_to_wandb(metrics, prefix, step, wandb_entity) -> None:
-    """
-    Log metrics to Weights & Biases.
-
-    Args:
-        metrics (dict): Dictionary of metrics to log
-        prefix (str): Prefix for metric names
-        step (int): Training step
-        wandb_entity (str): W&B entity instance
-
-    Returns:
-        None.
-    """
-    #print(metrics)
-    log_dict = {}
-    for name, value in metrics.items():
-        # Map loss_value to Loss for better readability in W&B
-        if name == "loss_value":
-            log_dict[f"{prefix}/Loss"] = value
-        # Keep other metrics as is
-        else:
-            log_dict[f"{prefix}/{name.replace('_', ' ').title()}"] = value
-    wandb_entity.log(log_dict, step=step)
-
-
-def load_checkpoint(module_name: str, path: str, step: int, device: str = "cpu") -> dict:
-    """
-    Loads a checkpoint for a given module.
-
-    Args:
-        module_name (str): Name of model component to load checkpoint for.
-        path (str): Path to checkpoint directory.
-        step (int): Gradient step number of saved checkpoint.
-        device (str): String specifying how to remap storage locations (default = "cpu").
-
-    Returns:
-        dict: PyTorch model state dictionary.
-    """
-    checkpoint_path = os.path.join(path, f"{module_name}--{step}_checkpoint.pt")
-    print(f"Loading checkpoint: {checkpoint_path}")
-    state_dict = torch.load(checkpoint_path, weights_only=True, map_location=device)
-    return remove_ddp_in_checkpoint(state_dict)
-
-def save_training_checkpoint(
-    cfg,
-    run_dir,
-    log_step,
-    vla,
-    processor,
-    proprio_projector,
-    noisy_action_projector,
-    action_head,
-    train_dataset,
-    distributed_state,
-) -> None:
-   pass
-
-
-
 def run_validation(
     vla,
     action_head,
@@ -783,10 +741,6 @@ def finetune(cfg: FinetuneConfig) -> None:
     """ 
 
     global RAW_STATE_DICT
-
-    assert not (cfg.use_l1_regression and cfg.use_diffusion), (
-        "Cannot do both L1 regression and diffusion. Please pick one of them!"
-    )
 
     # Trim trailing forward slash ('/') in VLA path if it exists
     cfg.vla_path = cfg.vla_path.rstrip("/")
@@ -895,6 +849,7 @@ def finetune(cfg: FinetuneConfig) -> None:
             low_cpu_mem_usage=True,
             trust_remote_code=True,
         ).to(device_id)
+
     # Set number of images in VLA input
     vla.vision_backbone.set_num_images_in_input(cfg.num_images_in_input)
 
@@ -1028,7 +983,7 @@ def finetune(cfg: FinetuneConfig) -> None:
     if cfg.use_diffusion:
         NUM_PATCHES += 1
 
-    # Instantiate optimizer
+    # Instantiate optimizer，这里的参数都是要保存的参数
     trainable_params = [param for param in vla.parameters() if param.requires_grad]
     if cfg.use_l1_regression or cfg.use_diffusion:
         trainable_params += [param for param in action_head.parameters() if param.requires_grad]
@@ -1110,23 +1065,15 @@ def finetune(cfg: FinetuneConfig) -> None:
         )
 
     # Deque to store recent train metrics (used for computing smoothened metrics for gradient accumulation)
-    if cfg.use_spatial:
-            recent_metrics = {
-            "loss_value": deque(maxlen=cfg.grad_accumulation_steps),
-            "curr_action_accuracy": deque(maxlen=cfg.grad_accumulation_steps),
-            "curr_action_l1_loss": deque(maxlen=cfg.grad_accumulation_steps),
-            "next_actions_accuracy": deque(maxlen=cfg.grad_accumulation_steps),
-            "next_actions_l1_loss": deque(maxlen=cfg.grad_accumulation_steps),
-            "align_loss": deque(maxlen=cfg.grad_accumulation_steps),
-        }
-    else:
-        recent_metrics = {
-            "loss_value": deque(maxlen=cfg.grad_accumulation_steps),
-            "curr_action_accuracy": deque(maxlen=cfg.grad_accumulation_steps),
-            "curr_action_l1_loss": deque(maxlen=cfg.grad_accumulation_steps),
-            "next_actions_accuracy": deque(maxlen=cfg.grad_accumulation_steps),
-            "next_actions_l1_loss": deque(maxlen=cfg.grad_accumulation_steps),
-        }
+    recent_metrics = {
+        "loss_value": deque(maxlen=cfg.grad_accumulation_steps),
+        "curr_action_accuracy": deque(maxlen=cfg.grad_accumulation_steps),
+        "curr_action_l1_loss": deque(maxlen=cfg.grad_accumulation_steps),
+        "next_actions_accuracy": deque(maxlen=cfg.grad_accumulation_steps),
+        "next_actions_l1_loss": deque(maxlen=cfg.grad_accumulation_steps),
+        "align_loss": deque(maxlen=cfg.grad_accumulation_steps),
+    }
+
     # Start training
     with tqdm.tqdm(total=cfg.max_steps, leave=False) as progress:
         vla.train()
