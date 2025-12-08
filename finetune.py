@@ -1,8 +1,8 @@
 import sys
 import os
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
-os.environ['HF_HOME'] = '/data1/yizhuo/Spatial-VLA/ckpt'
-os.environ['HUGGINGFACE_HUB_CACHE'] = '/data1/yizhuo/Spatial-VLA/ckpt/hub'
+#os.environ['HF_HOME'] = '/data1/yizhuo/Spatial-VLA/ckpt'
+#os.environ['HUGGINGFACE_HUB_CACHE'] = '/data1/yizhuo/Spatial-VLA/ckpt/hub'
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -22,7 +22,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import MultiStepLR, CosineAnnealingLR
 from torch.utils.data import DataLoader
-from transformers import AutoConfig, AutoImageProcessor, AutoModelForVision2Seq, AutoProcessor
+from transformers import AutoConfig, AutoImageProcessor, AutoModelForVision2Seq, AutoProcessor, AutoModel
 from transformers.modeling_outputs import CausalLMOutputWithPast
 import wandb
 
@@ -195,27 +195,6 @@ def get_run_id(cfg) -> str:
         if cfg.run_id_note is not None:
             run_id += f"--{cfg.run_id_note}"
     return run_id
-
-
-
-def load_checkpoint(module_name: str, path: str, step: int, device: str = "cpu") -> dict:
-    """
-    Loads a checkpoint for a given module.
-
-    Args:
-        module_name (str): Name of model component to load checkpoint for.
-        path (str): Path to checkpoint directory.
-        step (int): Gradient step number of saved checkpoint.
-        device (str): String specifying how to remap storage locations (default = "cpu").
-
-    Returns:
-        dict: PyTorch model state dictionary.
-    """
-    checkpoint_path = os.path.join(path, f"{module_name}--{step}_checkpoint.pt")
-    print(f"Loading checkpoint: {checkpoint_path}")
-    state_dict = torch.load(checkpoint_path, weights_only=True, map_location=device)
-    return remove_ddp_in_checkpoint(state_dict)
-
 
 
 def wrap_ddp(module: nn.Module, device_id: int, find_unused: bool = False) -> DDP:
@@ -404,32 +383,11 @@ def run_forward_pass(
         # calculate align loss
         with torch.autocast("cuda", dtype=torch.bfloat16):
             align_loss = align_projector(vision_hidden, vggt_hidden)
-    
-    # Compute metrics for discrete action representation (next-token prediction)
-    if use_full_injection:
-        multi_layer_hidden_states = []
+    else:
+        align_loss = torch.tensor(0.0, device=device_id)
 
-        for item in output.hidden_states:
-            text_hidden_states = item[:, num_patches:-1]
-            # Get hidden states for action portion of response
-            batch_size = batch["input_ids"].shape[0]
-            # actions_hidden_states = text_hidden_states[:, -1, :].reshape(batch_size, 1, -1).to(torch.bfloat16)
-            actions_hidden_states = text_hidden_states[current_action_mask | next_actions_mask].reshape(batch_size, 1, NUM_ACTIONS_CHUNK * ACTION_DIM, -1).to(torch.bfloat16)
-            task_latten_states = item[:, :num_patches].reshape(batch_size, 1, num_patches , -1)
-            all_hidden_states = torch.cat((task_latten_states, actions_hidden_states),2) # oral feature + action feature
-            multi_layer_hidden_states.append(all_hidden_states)
-        multi_layer_hidden_states = torch.cat(multi_layer_hidden_states, dim = 1)
 
-        predicted_actions = action_head.module.predict_action(
-            multi_layer_hidden_states,
-            proprio=batch["proprio"] if use_proprio else None,
-            proprio_projector=proprio_projector if use_proprio else None,
-            phase=phase
-            )
-
-        loss = torch.nn.L1Loss()(predicted_actions, ground_truth_actions)
-
-    elif not (use_l1_regression or use_diffusion):
+    if not (use_l1_regression or use_diffusion or use_full_injection):
         loss = output.loss
         predicted_token_ids = output.logits[:, num_patches:-1].argmax(dim=2)
         curr_action_accuracy = compute_token_accuracy(
@@ -444,27 +402,16 @@ def run_forward_pass(
         next_actions_l1_loss = compute_actions_l1_loss(
             action_tokenizer, predicted_token_ids, ground_truth_token_ids, mask=next_actions_mask
         )
-        if use_spatial:
-            metrics.update(
-                {
-                    "loss_value": loss.item(),  # Detached value for logging
-                    "curr_action_accuracy": curr_action_accuracy.item(),
-                    "curr_action_l1_loss": curr_action_l1_loss.item(),
-                    "next_actions_accuracy": next_actions_accuracy.item(),
-                    "next_actions_l1_loss": next_actions_l1_loss.item(),
-                    "align_loss": align_loss.item(),
-                }
-            )
-        else:
-            metrics.update(
-                {
-                    "loss_value": loss.item(),  # Detached value for logging
-                    "curr_action_accuracy": curr_action_accuracy.item(),
-                    "curr_action_l1_loss": curr_action_l1_loss.item(),
-                    "next_actions_accuracy": next_actions_accuracy.item(),
-                    "next_actions_l1_loss": next_actions_l1_loss.item(),
-                }
-            )
+        metrics.update(
+            {
+                "loss_value": loss.item(),  # Detached value for logging
+                "curr_action_accuracy": curr_action_accuracy.item(),
+                "curr_action_l1_loss": curr_action_l1_loss.item(),
+                "next_actions_accuracy": next_actions_accuracy.item(),
+                "next_actions_l1_loss": next_actions_l1_loss.item(),
+                "align_loss": align_loss.item(),
+            }
+        )
     # Compute metrics for continuous action representations (L1 regression | diffusion)
     else:
         # Get last layer hidden states
@@ -510,19 +457,35 @@ def run_forward_pass(
                         use_proprio=use_proprio,
                         use_film=use_film,
                     )
-        if use_spatial:
-            metrics.update(
-                {
-                    "loss_value": loss.item(),  # Detached value for logging
-                    "align_loss": align_loss.item(),
-                }
-            )
-        else:
-            metrics.update(
-                {
-                    "loss_value": loss.item(),  # Detached value for logging
-                }
-            )
+        if use_full_injection:
+            multi_layer_hidden_states = []
+
+            for item in output.hidden_states:
+                text_hidden_states = item[:, num_patches:-1]
+                # Get hidden states for action portion of response
+                batch_size = batch["input_ids"].shape[0]
+                # actions_hidden_states = text_hidden_states[:, -1, :].reshape(batch_size, 1, -1).to(torch.bfloat16)
+                actions_hidden_states = text_hidden_states[current_action_mask | next_actions_mask].reshape(batch_size, 1, NUM_ACTIONS_CHUNK * ACTION_DIM, -1).to(torch.bfloat16)
+                task_latten_states = item[:, :num_patches].reshape(batch_size, 1, num_patches , -1)
+                all_hidden_states = torch.cat((task_latten_states, actions_hidden_states),2) # oral feature + action feature
+                multi_layer_hidden_states.append(all_hidden_states)
+            multi_layer_hidden_states = torch.cat(multi_layer_hidden_states, dim = 1)
+
+            predicted_actions = action_head.module.predict_action(
+                multi_layer_hidden_states,
+                proprio=batch["proprio"] if use_proprio else None,
+                proprio_projector=proprio_projector if use_proprio else None,
+                phase=phase
+                )
+
+            loss = torch.nn.L1Loss()(predicted_actions, ground_truth_actions)
+
+        metrics.update(
+            {
+                "loss_value": loss.item(),  # Detached value for logging
+                "align_loss": align_loss.item(),
+            }
+        )
 
         # Get detailed L1 losses for logging
         should_log_l1_loss = not use_diffusion or (use_diffusion and compute_diffusion_l1) or use_full_injection
@@ -648,6 +611,7 @@ def compute_smoothened_metrics(metrics_deques) -> dict:
     Returns:
         dict: Dictionary of smoothened metrics.
     """
+    #print(metrics_deques)
     smoothened_metrics = {}
     for name, deque in metrics_deques.items():
         if deque and len(deque) > 0:
@@ -669,6 +633,7 @@ def log_metrics_to_wandb(metrics, prefix, step, wandb_entity) -> None:
     Returns:
         None.
     """
+    #print(metrics)
     log_dict = {}
     for name, value in metrics.items():
         # Map loss_value to Loss for better readability in W&B
@@ -680,7 +645,23 @@ def log_metrics_to_wandb(metrics, prefix, step, wandb_entity) -> None:
     wandb_entity.log(log_dict, step=step)
 
 
+def load_checkpoint(module_name: str, path: str, step: int, device: str = "cpu") -> dict:
+    """
+    Loads a checkpoint for a given module.
 
+    Args:
+        module_name (str): Name of model component to load checkpoint for.
+        path (str): Path to checkpoint directory.
+        step (int): Gradient step number of saved checkpoint.
+        device (str): String specifying how to remap storage locations (default = "cpu").
+
+    Returns:
+        dict: PyTorch model state dictionary.
+    """
+    checkpoint_path = os.path.join(path, f"{module_name}--{step}_checkpoint.pt")
+    print(f"Loading checkpoint: {checkpoint_path}")
+    state_dict = torch.load(checkpoint_path, weights_only=True, map_location=device)
+    return remove_ddp_in_checkpoint(state_dict)
 
 def save_training_checkpoint(
     cfg,
@@ -954,10 +935,8 @@ def finetune(cfg: FinetuneConfig) -> None:
     vla = wrap_ddp(vla, device_id, find_unused=True)
 
     if cfg.use_spatial:
-        '''
-        vggt_model = VGGT.from_pretrained(cfg.vggt_path).aggregator
-        vggt_model = vggt_model.to(device_id)
-        '''
+        hf_model = VGGT.from_pretrained(cfg.vggt_path)
+
         vggt_model = VGGT(
             enable_camera=False,
             enable_point=False,
@@ -965,7 +944,8 @@ def finetune(cfg: FinetuneConfig) -> None:
             enable_track=False,
             feature_only=True,
         )
-        #vggt_model.load_state_dict(torch.load(cfg.vggt_path), strict=False)
+
+        vggt_model.load_state_dict(hf_model.state_dict(), strict=False)
         vggt_model = vggt_model.to(device_id)
 
         align_projector = init_module(
@@ -1179,6 +1159,7 @@ def finetune(cfg: FinetuneConfig) -> None:
                 compute_diffusion_l1=compute_diffusion_l1,
                 num_diffusion_steps_train=cfg.num_diffusion_steps_train if cfg.use_diffusion else None,
             )
+            #print(metrics)
 
             # Normalize loss to account for gradient accumulation
             normalized_loss = loss / cfg.grad_accumulation_steps
