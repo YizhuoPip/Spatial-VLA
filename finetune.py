@@ -284,11 +284,10 @@ def save_training_checkpoint(
             config = AutoConfig.from_pretrained("pretrained_models/configs/config.json")
             base_vla = AutoModelForVision2Seq.from_config(config, torch_dtype=torch.bfloat16)  # Create a new model with configuration, the parameters are randomly initialized
             # print(new_state_dict['action_queries.weight'])
-            '''
-            action query
+
+            #action-query
             new_state_dict['action_queries.weight'] = vla.state_dict()['module.base_model.model.action_queries.weight'].cpu()
             missing_keys, unexpected_keys = base_vla.load_state_dict(new_state_dict, strict=False)
-            '''
             
         else:
             base_vla = AutoModelForVision2Seq.from_pretrained(
@@ -1164,9 +1163,11 @@ def finetune(cfg: FinetuneConfig) -> None:
                     processor=processor,
                     proprio_projector=proprio_projector if cfg.use_proprio else None,
                     noisy_action_projector=noisy_action_projector if cfg.use_diffusion else None,
-                    action_head=action_head if (cfg.use_l1_regression or cfg.use_diffusion) else None,
+                    align_projector = align_projector if cfg.use_spatial else None,
+                    action_head=action_head if (cfg.use_l1_regression or cfg.use_diffusion or cfg.use_full_injection) else None,
                     train_dataset=train_dataset,
                     distributed_state=distributed_state,
+                    new_state_dict=RAW_STATE_DICT,
                 )
 
             # Test model on validation set
