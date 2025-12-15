@@ -677,6 +677,20 @@ OXE_DATASET_CONFIGS = {
         "state_encoding": StateEncoding.POS_EULER,
         "action_encoding": ActionEncoding.EEF_POS,
     },
+    "calvin_abc": {
+        "image_obs_keys": {"primary": "rgb_static", "secondary": None, "wrist": "rgb_gripper"},
+        "depth_obs_keys": {"primary": "depth_static", "secondary": None, "wrist": "depth_gripper"},
+        "state_obs_keys": ["EEF_state", "gripper_state"],
+        "state_encoding": StateEncoding.POS_EULER,
+        "action_encoding": ActionEncoding.EEF_POS,
+    },
+    "calvin": {
+        "image_obs_keys": {"primary": "rgb_static", "secondary": None, "wrist": "rgb_gripper"},
+        "depth_obs_keys": {"primary": "depth_static", "secondary": None, "wrist": "depth_gripper"},
+        "state_obs_keys": ["EEF_state", "gripper_state"],
+        "state_encoding": StateEncoding.POS_EULER,
+        "action_encoding": ActionEncoding.EEF_POS,
+    },
     ### ALOHA fine-tuning datasets
     "aloha1_fold_shorts_20_demos": {
         "image_obs_keys": {"primary": "image", "secondary": None, "left_wrist": "left_wrist_image", "right_wrist": "right_wrist_image"},

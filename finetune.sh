@@ -27,8 +27,8 @@ CUDA_VISIBLE_DEVICES=4,5 torchrun --standalone --nnodes 1 --nproc-per-node $num_
 --num_steps_before_decay $steps \
 --max_steps $steps \
 --save_freq 10000 \
---save_latest_checkpoint_only True \
---merge_lora_during_training False \
+--save_latest_checkpoint_only False \
+--merge_lora_during_training True \
 --batch_size $batch_size \
 --grad_accumulation_steps $grad_accumulation_steps \
 --learning_rate $lr \

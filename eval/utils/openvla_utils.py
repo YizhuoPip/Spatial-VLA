@@ -474,7 +474,7 @@ def get_action_head(cfg: Any, llm_dim: int):
         AssertionError: If both L1 regression and diffusion are specified
     """
     if cfg.use_full_injection:
-        action_head = L1RegressionActionHead(
+        action_head = FullInjectActionHead(
             input_dim=llm_dim, 
             hidden_dim=llm_dim, 
             action_dim=ACTION_DIM,

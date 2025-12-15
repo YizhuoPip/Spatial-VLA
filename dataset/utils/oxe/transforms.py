@@ -840,6 +840,30 @@ def libero_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
     trajectory["observation"]["gripper_state"] = trajectory["observation"]["state"][:, -2:]  # 2D gripper state
     return trajectory
 
+def calvin_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
+    # calvin +1 = open, -1 = close
+    # gripper action is in -1 (open)...1 (close) --> clip to 0...1, flip --> +1 = open, 0 = close
+    gripper_action = trajectory["action"][:, -1:]
+    gripper_action = tf.clip_by_value(gripper_action, 0, 1)
+    
+    trajectory["action"] = tf.concat(
+        [
+            trajectory["action"][:, :6],
+            gripper_action,
+        ],
+        axis=1,
+    )
+    
+    trajectory["observation"]["EEF_state"] = trajectory["observation"]["state"][:, :6]
+    # trajectory["observation"]["gripper_state"] = trajectory["observation"]["state"][:, -2:]  # 2D gripper state
+    trajectory["observation"]["gripper_state"] = tf.concat(
+        [
+            trajectory["observation"]["state"][:, 6:7],
+            trajectory["observation"]["state"][:, -1:],
+        ],
+        axis=1,
+    )
+    return trajectory
 
 def aloha_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
     # Don't need to do anything because dataset is already in the correct format
@@ -925,6 +949,8 @@ OXE_STANDARDIZATION_TRANSFORMS = {
     "libero_goal_no_noops": libero_dataset_transform,
     "libero_10_no_noops": libero_dataset_transform,
     "libero_4_task_suites_no_noops": libero_dataset_transform,
+    "calvin_abc_rlds": calvin_dataset_transform,
+    "calvin": calvin_dataset_transform,
     ### ALOHA fine-tuning datasets
     "aloha1_fold_shorts_20_demos": aloha_dataset_transform,
     "aloha1_fold_shirt_30_demos": aloha_dataset_transform,
