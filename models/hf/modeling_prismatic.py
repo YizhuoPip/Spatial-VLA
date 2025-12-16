@@ -910,6 +910,8 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
         NUM_PATCHES,
         NUM_PROMPT_TOKENS,
         action_head=None,
+        proprio=None,
+        proprio_projector=None,
     ):
         """Run L1 regression-based continuous action prediction or discrete action tokens prediction."""
         '''
@@ -917,6 +919,7 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
         all_actions_mask = all_actions_mask.unsqueeze(-1)  # (B, seq_len, 1)
         input_embeddings = input_embeddings * ~all_actions_mask
         '''
+        #print("22222222222222222222222222")
         action_queries = self.action_queries.weight  # (1, h)
         action_queries = action_queries.view(1, action_queries.shape[0], action_queries.shape[1]).repeat(input_embeddings.shape[0], 1, 1)  # (b, chunk_size, h)
         # Replace action token embeddings with noisy action embeddings
@@ -941,7 +944,8 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
             output_hidden_states=True,
             return_dict=True,
         )
-
+        #print("333333333333333333333333333")
+        
         # Extract hidden states for action tokens
         last_hidden_states = language_model_output.hidden_states[-1]  # (B, seq_len, D)
         actions_hidden_states = last_hidden_states[
@@ -949,13 +953,37 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
             NUM_PATCHES + NUM_PROMPT_TOKENS : NUM_PATCHES + NUM_PROMPT_TOKENS + ACTION_DIM * NUM_ACTIONS_CHUNK,
             :,
         ]  # (B, act_chunk_len, D)
-
+        '''
         # Handle different prediction methods
         if action_head is not None:
             # L1 regression prediction
             normalized_actions = action_head.predict_action(actions_hidden_states)
+            
             normalized_actions = normalized_actions.reshape(NUM_ACTIONS_CHUNK, ACTION_DIM)
             normalized_actions = normalized_actions.float().cpu().detach().numpy()
+        '''
+        if action_head is not None:
+            multi_layer_hidden_states = []
+
+            for item in language_model_output.hidden_states[0:]:
+                # last_hidden_states = output.hidden_states[-1]  # (B, seq_len, D)
+                # Get hidden states for text portion of prompt+response (after the vision patches)
+                text_hidden_states = item
+                # Get hidden states for action portion of response
+                actions_hidden_states = text_hidden_states[:, NUM_PATCHES+ NUM_PROMPT_TOKENS : NUM_PATCHES + NUM_PROMPT_TOKENS + NUM_ACTIONS_CHUNK * ACTION_DIM, :,].reshape(1, 1, NUM_ACTIONS_CHUNK * ACTION_DIM, -1).to(torch.bfloat16)
+                
+                batch_size = item.shape[0]
+                task_latten_states = item[:, :NUM_PATCHES].reshape(batch_size, 1, NUM_PATCHES , -1)
+                all_hidden_states = torch.cat((task_latten_states, actions_hidden_states),2)
+                multi_layer_hidden_states.append(all_hidden_states)
+            multi_layer_hidden_states = torch.cat(multi_layer_hidden_states, dim = 1)
+
+            normalized_actions = action_head.predict_action(multi_layer_hidden_states,
+                                                proprio=proprio,
+                                                proprio_projector=proprio_projector)
+            normalized_actions = normalized_actions.reshape(NUM_ACTIONS_CHUNK, ACTION_DIM)
+            normalized_actions = normalized_actions.float().cpu().detach().numpy()
+
         else:
             # Discrete token-based prediction
             predicted_action_token_ids = (
@@ -1083,6 +1111,8 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
                 NUM_PATCHES,
                 NUM_PROMPT_TOKENS,
                 action_head,
+                proprio,
+                proprio_projector,
             )
 
         # Unnormalize predicted actions

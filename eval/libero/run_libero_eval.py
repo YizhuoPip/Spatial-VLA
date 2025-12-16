@@ -149,7 +149,7 @@ def initialize_model(cfg: GenerateConfig):
     """Initialize model and associated components."""
     # Load model
     model = get_model(cfg)
-    model.set_version(cfg.save_version)
+    #model.set_version(cfg.save_version)
     # Load proprio projector if needed
     proprio_projector = None
     if cfg.use_proprio:
