@@ -10,11 +10,11 @@ from enum import Enum
 
 # Llama 2 token constants
 IGNORE_INDEX = -100
-ACTION_TOKEN_BEGIN_IDX = 31743
 STOP_INDEX = 2  
+#ACTION_TOKEN_BEGIN_IDX = 31743
 
 #Qwen25
-ACTION_TOKEN_BEGIN_IDX_QWEN= 151386
+ACTION_TOKEN_BEGIN_IDX= 151386
 
 # Defines supported normalization schemes for action and proprioceptive state.
 class NormalizationType(str, Enum):
