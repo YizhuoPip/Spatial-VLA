@@ -603,9 +603,9 @@ class PrismaticForConditionalGeneration(PrismaticPreTrainedModel):
             projected_patch_embeddings = self._process_vision_features(pixel_values, language_embeddings, use_film)
 
             # Add proprioceptive state if provided
-            projected_patch_embeddings = self._process_proprio_features(
-                projected_patch_embeddings, proprio, proprio_projector
-            )
+            # projected_patch_embeddings = self._process_proprio_features(
+            #    projected_patch_embeddings, proprio, proprio_projector
+            #)
 
             # [Diffusion] Add diffusion timestep embedding if provided
             if diffusion_timestep_embeddings is not None:
@@ -642,8 +642,7 @@ class PrismaticForConditionalGeneration(PrismaticPreTrainedModel):
                 action_queries = self.action_queries.weight  # (1, h)
                 action_queries = action_queries.view(1, action_queries.shape[0], action_queries.shape[1]).repeat(input_embeddings.shape[0], 1, 1)  # (b, chunk_size, h)
                 all_actions_mask = self._process_action_masks(labels)
-                input_embeddings = self._replace_input_embeddings(
-                input_embeddings, all_actions_mask, action_queries)
+                input_embeddings = self._replace_input_embeddings(input_embeddings, all_actions_mask, action_queries)
 
 
             # Build multimodal embeddings & attention mask
@@ -1064,20 +1063,20 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
         projected_patch_embeddings = self._process_vision_features(pixel_values, language_embeddings, use_film)
 
         # Add proprioceptive features if provided
-        use_proprio = proprio_projector is not None and proprio is not None
-        if use_proprio:
-            proprio = torch.Tensor(proprio).to(projected_patch_embeddings.device, dtype=projected_patch_embeddings.dtype)
-            projected_patch_embeddings = self._process_proprio_features(
-                projected_patch_embeddings, proprio, proprio_projector
-            )
+        # use_proprio = proprio_projector is not None and proprio is not None
+        # if use_proprio:
+        #    proprio = torch.Tensor(proprio).to(projected_patch_embeddings.device, dtype=projected_patch_embeddings.dtype)
+        #    projected_patch_embeddings = self._process_proprio_features(
+        #        projected_patch_embeddings, proprio, proprio_projector
+        #    )
 
         # Use diffusion if provided, otherwise use regression or discrete prediction
         use_diffusion = noisy_action_projector is not None and hasattr(action_head, "noise_scheduler")
 
         # Calculate number of patches (including proprio token and/or diffusion timestep embedding if present)
         NUM_PATCHES = self.vision_backbone.get_num_patches() * self.vision_backbone.get_num_images_in_input()
-        if use_proprio:
-            NUM_PATCHES += 1
+        #if use_proprio:
+        #    NUM_PATCHES += 1
         if use_diffusion:
             NUM_PATCHES += 1
 

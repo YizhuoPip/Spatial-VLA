@@ -972,18 +972,18 @@ def finetune(cfg: FinetuneConfig) -> None:
         )
 
     # Get number of vision patches
-    NUM_PATCHES = vla.module.vision_backbone.get_num_patches() * vla.module.vision_backbone.get_num_images_in_input()
-    # 512
-   # If we have proprio inputs, a single proprio embedding is appended to the end of the vision patch embeddings
-    if cfg.use_proprio:
-        NUM_PATCHES += 1
+    NUM_PATCHES = vla.module.vision_backbone.get_num_patches() * vla.module.vision_backbone.get_num_images_in_input() # 512
+    # If we have proprio inputs, a single proprio embedding is appended to the end of the vision patch embeddings
+    # 取决于模型是否会将输入的 proprio 数据放入llm还是action head
+    # if cfg.use_proprio:
+    #    NUM_PATCHES += 1
     # For diffusion, a single diffusion timestep embedding is appended to the end of the vision patch embeddings
     if cfg.use_diffusion:
         NUM_PATCHES += 1
 
     # Instantiate optimizer，这里的参数都是要保存的参数
     trainable_params = [param for param in vla.parameters() if param.requires_grad]
-    if cfg.use_l1_regression or cfg.use_diffusion:
+    if cfg.use_l1_regression or cfg.use_diffusion or cfg.use_full_injection:
         trainable_params += [param for param in action_head.parameters() if param.requires_grad]
     if cfg.use_diffusion:
         trainable_params += [param for param in noisy_action_projector.parameters() if param.requires_grad]
@@ -1011,22 +1011,6 @@ def finetune(cfg: FinetuneConfig) -> None:
         )
     else:
         raise ValueError(f"Unsupported scheduler type: {cfg.scheduler}")
-
-    # Load Fine-tuning Dataset =>> note that we use an RLDS-formatted dataset following Open X-Embodiment by default.
-    #   =>> If you want to use a non-RLDS dataset (e.g., a standard PyTorch Dataset) see the following commented block.
-    #   =>> Note that our training code does not loop over epochs because the RLDS loader does this implicitly; if using
-    #       your own Dataset, make sure to add the appropriate logic to the training loop!
-    #
-    # ---
-    # from prismatic.vla.datasets import DummyDataset
-    #
-    # train_dataset = DummyDataset(
-    #     action_tokenizer,
-    #     processor.tokenizer,
-    #     image_transform=processor.image_processor.apply_transform,
-    #     prompt_builder_fn=PurePromptBuilder,
-    # )
-    # ---
 
     # We assume that the model takes as input one third-person camera image and 1 or 2 optional wrist camera image(s)
     use_wrist_image = cfg.num_images_in_input > 1
@@ -1104,8 +1088,6 @@ def finetune(cfg: FinetuneConfig) -> None:
                 compute_diffusion_l1=compute_diffusion_l1,
                 num_diffusion_steps_train=cfg.num_diffusion_steps_train if cfg.use_diffusion else None,
             )
-            #print(metrics)
-
             # Normalize loss to account for gradient accumulation
             normalized_loss = loss / cfg.grad_accumulation_steps
 
