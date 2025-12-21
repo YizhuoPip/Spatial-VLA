@@ -134,7 +134,6 @@ class RLDSBatchTransform:
         if self.use_proprio and "proprio" in rlds_batch["observation"]:
             proprio = rlds_batch["observation"]["proprio"]
             return_dict["proprio"] = proprio
-
         return return_dict
 
 class RLDSDataset(IterableDataset):
@@ -170,16 +169,12 @@ class RLDSDataset(IterableDataset):
         else:
             load_camera_views = ("primary", "wrist")
 
-        if "calvin" in self.data_mix:
-            use_depth = True
-        else:
-            use_depth = False
 
         per_dataset_kwargs, per_dataset_weights = get_oxe_dataset_kwargs_and_weights(
             self.data_root_dir,
             mixture_spec,
             load_camera_views=load_camera_views,
-            load_depth=use_depth,
+            load_depth=False,
             load_proprio=True,
             load_language=True,
             action_proprio_normalization_type=ACTION_PROPRIO_NORMALIZATION_TYPE,

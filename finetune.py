@@ -249,11 +249,13 @@ def save_training_checkpoint(
         os.makedirs(adapter_dir, exist_ok=True)
         save_dataset_statistics(train_dataset.dataset_statistics, checkpoint_dir)
         print(f"Saving Model Checkpoint for Step {log_step}")
+
     dist.barrier()
 
     if distributed_state.is_main_process:
         # Save processor and LoRA adapter
         processor.save_pretrained(checkpoint_dir)
+
         vla.module.save_pretrained(adapter_dir)
 
         # Save other components
@@ -526,7 +528,7 @@ def run_forward_pass(
         )
 
         # Get detailed L1 losses for logging
-        should_log_l1_loss = not use_diffusion or (use_diffusion and compute_diffusion_l1) or use_full_injection
+        should_log_l1_loss = use_l1_regression or use_full_injection
         if should_log_l1_loss:
             ground_truth_curr_action = ground_truth_actions[:, 0]
             predicted_curr_action = predicted_actions[:, 0]
@@ -742,8 +744,9 @@ def finetune(cfg: FinetuneConfig) -> None:
     global RAW_STATE_DICT
 
     # Trim trailing forward slash ('/') in VLA path if it exists
-    cfg.vla_path = cfg.vla_path.rstrip("/")
-    print(f"Fine-tuning OpenVLA Model `{cfg.vla_path}` on `{cfg.dataset_name}`")
+    if cfg.model_type == "vla":
+        cfg.vla_path = cfg.vla_path.rstrip("/")
+        print(f"Fine-tuning OpenVLA Model `{cfg.vla_path}` on `{cfg.dataset_name}`")
 
     # Get experiment run ID
     run_id = get_run_id(cfg)
@@ -776,10 +779,6 @@ def finetune(cfg: FinetuneConfig) -> None:
     #   - Then download it and record the path to the download directory
     # (2) Base model is stored locally
     #   - Then register model config in HF Auto Classes
-    # In both cases, we want to check whether any changes have been made to
-    # the `modeling_prismatic.py` file in this codebase; if so, we will copy
-    # the file to the downloaded or locally stored checkpoint directory so
-    # that the user's changes to the VLA class logic go into effect
 
     if model_is_on_hf_hub(cfg.vla_path):
         # Download model directly from Hugging Face Hub
@@ -810,6 +809,7 @@ def finetune(cfg: FinetuneConfig) -> None:
         hf_token = ''
         vlm = load(cfg.vlm_path, hf_token=hf_token, load_for_training=True)
         #vlm是一个承载器，load 可用的 checkpoint，这个参数最后还是要放回vla，所以最后forward是用的还是vla
+        # config有点像定义这个model很多参数的文件
         config = AutoConfig.from_pretrained("pretrained_models/configs/config.json")
         vla = AutoModelForVision2Seq.from_config(config, torch_dtype=torch.bfloat16).to(device_id)  # Create a new model with configuration, the parameters are randomly initialized
         # for name, param in model.named_parameters():
@@ -855,12 +855,15 @@ def finetune(cfg: FinetuneConfig) -> None:
     if cfg.use_lora:
         lora_config = LoraConfig(
             r=cfg.lora_rank,
-            lora_alpha=min(cfg.lora_rank, 16),
+            lora_alpha=2 * cfg.lora_rank,
             lora_dropout=cfg.lora_dropout,
             target_modules="all-linear",
             init_lora_weights="gaussian",
         )
         vla = get_peft_model(vla, lora_config)
+        for name, param in vla.named_parameters():
+            if "action_queries" in name:
+                param.requires_grad = True
         vla.print_trainable_parameters()
 
     else:
@@ -871,10 +874,6 @@ def finetune(cfg: FinetuneConfig) -> None:
     # FiLM setup
     if cfg.use_film:
         count_parameters(vla.vision_backbone, "vla.vision_backbone (original)")
-        # Wrap vision backbone with FiLM wrapper
-        # Important: For this, must specify `vla.model.vision_backbone` instead of just `vla.vision_backbone`, since the
-        # latter would cause the new wrapped backbone to be saved as a new attribute of `vla` instead of overwriting the
-        # original one (due to the LoRA wrapper)
         vla.model.vision_backbone = FiLMedPrismaticVisionBackbone(
             vision_backbone=vla.model.vision_backbone,
             llm_dim=vla.llm_dim,
