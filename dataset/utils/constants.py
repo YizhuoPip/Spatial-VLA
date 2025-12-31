@@ -11,11 +11,17 @@ from enum import Enum
 # Llama 2 token constants
 IGNORE_INDEX = -100
 STOP_INDEX = 2  
+#llama
 #ACTION_TOKEN_BEGIN_IDX = 31743
-
 #Qwen25
-ACTION_TOKEN_BEGIN_IDX= 151386
+#ACTION_TOKEN_BEGIN_IDX= 151386
 
+cmd_args = " ".join(sys.argv).lower()
+is_vlm = "model_type vlm" in cmd_args or "--model_type vlm" in cmd_args
+if is_vlm:
+    ACTION_TOKEN_BEGIN_IDX = 151386
+else:
+    ACTION_TOKEN_BEGIN_IDX = 31743
 # Defines supported normalization schemes for action and proprioceptive state.
 class NormalizationType(str, Enum):
     # fmt: off
@@ -71,7 +77,6 @@ def detect_robot_platform():
         # Default to LIBERO if unclear
         return "LIBERO"
 
-
 # Determine which robot platform to use
 ROBOT_PLATFORM = detect_robot_platform()
 
@@ -98,4 +103,5 @@ print(f"  NUM_ACTIONS_CHUNK = {NUM_ACTIONS_CHUNK}")
 print(f"  ACTION_DIM = {ACTION_DIM}")
 print(f"  PROPRIO_DIM = {PROPRIO_DIM}")
 print(f"  ACTION_PROPRIO_NORMALIZATION_TYPE = {ACTION_PROPRIO_NORMALIZATION_TYPE}")
+print(f"  ACTION_TOKEN_BEGIN_IDX = {ACTION_TOKEN_BEGIN_IDX}")
 print("If needed, manually set the correct constants in `prismatic/vla/constants.py`!")

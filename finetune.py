@@ -62,7 +62,8 @@ from dataset.utils.constants import (
     ACTION_DIM,
     ACTION_PROPRIO_NORMALIZATION_TYPE,
     NUM_ACTIONS_CHUNK,
-    PROPRIO_DIM
+    PROPRIO_DIM,
+    ACTION_TOKEN_BEGIN_IDX
 )
 from dataset import get_vla_dataset_and_collator
 
@@ -146,13 +147,13 @@ def get_run_id(cfg) -> str:
         run_id = cfg.run_id_override
     elif cfg.resume:
         # Override run ID with the previous resumed run's ID
-        run_id = cfg.config_file_path.split("/")[-1]
+        run_id = cfg.vla_path.split("/")[-1]
         # Remove the "--XXX_chkpt" suffix from the run ID if it exists
         if "chkpt" in run_id.split("--")[-1]:
             run_id = "--".join(run_id.split("--")[:-1])
     else:
         run_id = (
-            f"{cfg.config_file_path.split('/')[-1]}+{cfg.dataset_name}"
+            f"{cfg.vla_path.split('/')[-1]}+{cfg.dataset_name}"
             f"+b{cfg.batch_size * cfg.grad_accumulation_steps}"
             f"+lr-{cfg.learning_rate}"
         )
@@ -293,8 +294,8 @@ def save_training_checkpoint(
             
         else:
             base_vla = AutoModelForVision2Seq.from_pretrained(
-            cfg.config_file_path, torch_dtype=torch.bfloat16, low_cpu_mem_usage=False, trust_remote_code=False
-        )
+                cfg.vla_path, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, trust_remote_code=True
+            )
 
 
         merged_vla = PeftModel.from_pretrained(base_vla, adapter_dir)
@@ -513,8 +514,8 @@ def run_forward_pass(
 
             predicted_actions = action_head.module.predict_action(
                 multi_layer_hidden_states,
-                proprio=batch["proprio"] if use_proprio else None,
-                proprio_projector=proprio_projector if use_proprio else None,
+                proprio=None,
+                proprio_projector=None,
                 phase=phase
                 )
 
@@ -772,6 +773,7 @@ def finetune(cfg: FinetuneConfig) -> None:
         f"\tACTION_DIM: {ACTION_DIM}\n"
         f"\tPROPRIO_DIM: {PROPRIO_DIM}\n"
         f"\tACTION_PROPRIO_NORMALIZATION_TYPE: {ACTION_PROPRIO_NORMALIZATION_TYPE}"
+        f"\tACTION_TOKEN_BEGIN_IDX: {ACTION_TOKEN_BEGIN_IDX}"
     )
 
     # Two options:
@@ -810,7 +812,7 @@ def finetune(cfg: FinetuneConfig) -> None:
         vlm = load(cfg.vlm_path, hf_token=hf_token, load_for_training=True)
         #vlm是一个承载器，load 可用的 checkpoint，这个参数最后还是要放回vla，所以最后forward是用的还是vla
         # config有点像定义这个model很多参数的文件
-        config = AutoConfig.from_pretrained("pretrained_models/configs/config.json")
+        config = AutoConfig.from_pretrained("vla-qwen/configs/config.json")
         vla = AutoModelForVision2Seq.from_config(config, torch_dtype=torch.bfloat16).to(device_id)  # Create a new model with configuration, the parameters are randomly initialized
         # for name, param in model.named_parameters():
         #     print(f"{name}: {param.shape}")
@@ -880,7 +882,7 @@ def finetune(cfg: FinetuneConfig) -> None:
         )
         count_parameters(vla.vision_backbone, "vla.vision_backbone (post-wrap)")
         if cfg.resume:
-            state_dict = load_checkpoint("vision_backbone", cfg.config_file_path, cfg.resume_step)
+            state_dict = load_checkpoint("vision_backbone", cfg.vla_path, cfg.resume_step)
             vla.model.vision_backbone.load_state_dict(state_dict)
         vla.model.vision_backbone = vla.model.vision_backbone.to(device_id)
 
@@ -975,8 +977,8 @@ def finetune(cfg: FinetuneConfig) -> None:
     NUM_PATCHES = vla.module.vision_backbone.get_num_patches() * vla.module.vision_backbone.get_num_images_in_input() # 512
     # If we have proprio inputs, a single proprio embedding is appended to the end of the vision patch embeddings
     # 取决于模型是否会将输入的 proprio 数据放入llm还是action head
-    # if cfg.use_proprio:
-    #    NUM_PATCHES += 1
+    if cfg.use_proprio:
+        NUM_PATCHES += 1
     # For diffusion, a single diffusion timestep embedding is appended to the end of the vision patch embeddings
     if cfg.use_diffusion:
         NUM_PATCHES += 1
