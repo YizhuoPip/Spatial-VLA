@@ -296,7 +296,8 @@ def save_training_checkpoint(
             base_vla = AutoModelForVision2Seq.from_pretrained(
                 cfg.vla_path, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, trust_remote_code=True
             )
-
+            new_state_dict['action_queries.weight'] = vla.state_dict()['module.base_model.model.action_queries.weight'].cpu()
+            missing_keys, unexpected_keys = base_vla.load_state_dict(new_state_dict, strict=False)
 
         merged_vla = PeftModel.from_pretrained(base_vla, adapter_dir)
         merged_vla = merged_vla.merge_and_unload()
