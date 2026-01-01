@@ -798,6 +798,7 @@ def get_vla_action(
                 noisy_action_projector=noisy_action_projector,
                 action_head=action_head,
                 use_film=use_film,
+                use_full_injection = cfg.use_full_injection,
             )
 
     # Extract subset of actions for open loop steps

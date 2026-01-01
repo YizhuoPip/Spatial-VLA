@@ -284,7 +284,7 @@ def save_training_checkpoint(
 
     if cfg.use_lora and cfg.merge_lora_during_training:
         if cfg.model_type == "vlm":
-            config = AutoConfig.from_pretrained("pretrained_models/configs/config.json")
+            config = AutoConfig.from_pretrained("vla-qwen/configs/config.json")
             base_vla = AutoModelForVision2Seq.from_config(config, torch_dtype=torch.bfloat16)  # Create a new model with configuration, the parameters are randomly initialized
             # print(new_state_dict['action_queries.weight'])
 

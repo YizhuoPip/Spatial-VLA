@@ -911,6 +911,7 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
         action_head=None,
         proprio=None,
         proprio_projector=None,
+        use_full_injection=False,
     ):
         """Run L1 regression-based continuous action prediction or discrete action tokens prediction."""
         '''
@@ -952,37 +953,36 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
             NUM_PATCHES + NUM_PROMPT_TOKENS : NUM_PATCHES + NUM_PROMPT_TOKENS + ACTION_DIM * NUM_ACTIONS_CHUNK,
             :,
         ]  # (B, act_chunk_len, D)
-        '''
+        
         # Handle different prediction methods
         if action_head is not None:
-            # L1 regression prediction
-            normalized_actions = action_head.predict_action(actions_hidden_states)
-            
-            normalized_actions = normalized_actions.reshape(NUM_ACTIONS_CHUNK, ACTION_DIM)
-            normalized_actions = normalized_actions.float().cpu().detach().numpy()
-        '''
-        if action_head is not None:
-            multi_layer_hidden_states = []
+            if use_full_injection:
+                multi_layer_hidden_states = []
 
-            for item in language_model_output.hidden_states[0:]:
-                # last_hidden_states = output.hidden_states[-1]  # (B, seq_len, D)
-                # Get hidden states for text portion of prompt+response (after the vision patches)
-                text_hidden_states = item
-                # Get hidden states for action portion of response
-                actions_hidden_states = text_hidden_states[:, NUM_PATCHES+ NUM_PROMPT_TOKENS : NUM_PATCHES + NUM_PROMPT_TOKENS + NUM_ACTIONS_CHUNK * ACTION_DIM, :,].reshape(1, 1, NUM_ACTIONS_CHUNK * ACTION_DIM, -1).to(torch.bfloat16)
+                for item in language_model_output.hidden_states[0:]:
+                    # last_hidden_states = output.hidden_states[-1]  # (B, seq_len, D)
+                    # Get hidden states for text portion of prompt+response (after the vision patches)
+                    text_hidden_states = item
+                    # Get hidden states for action portion of response
+                    actions_hidden_states = text_hidden_states[:, NUM_PATCHES+ NUM_PROMPT_TOKENS : NUM_PATCHES + NUM_PROMPT_TOKENS + NUM_ACTIONS_CHUNK * ACTION_DIM, :,].reshape(1, 1, NUM_ACTIONS_CHUNK * ACTION_DIM, -1).to(torch.bfloat16)
+                    
+                    batch_size = item.shape[0]
+                    task_latten_states = item[:, :NUM_PATCHES].reshape(batch_size, 1, NUM_PATCHES , -1)
+                    all_hidden_states = torch.cat((task_latten_states, actions_hidden_states),2)
+                    multi_layer_hidden_states.append(all_hidden_states)
+                multi_layer_hidden_states = torch.cat(multi_layer_hidden_states, dim = 1)
+
+                normalized_actions = action_head.predict_action(multi_layer_hidden_states,
+                                                    proprio=None,
+                                                    proprio_projector=None)
+                normalized_actions = normalized_actions.reshape(NUM_ACTIONS_CHUNK, ACTION_DIM)
+                normalized_actions = normalized_actions.float().cpu().detach().numpy()
+            else:
+                # L1 regression prediction
+                normalized_actions = action_head.predict_action(actions_hidden_states)
                 
-                batch_size = item.shape[0]
-                task_latten_states = item[:, :NUM_PATCHES].reshape(batch_size, 1, NUM_PATCHES , -1)
-                all_hidden_states = torch.cat((task_latten_states, actions_hidden_states),2)
-                multi_layer_hidden_states.append(all_hidden_states)
-            multi_layer_hidden_states = torch.cat(multi_layer_hidden_states, dim = 1)
-
-            normalized_actions = action_head.predict_action(multi_layer_hidden_states,
-                                                proprio=proprio,
-                                                proprio_projector=proprio_projector)
-            normalized_actions = normalized_actions.reshape(NUM_ACTIONS_CHUNK, ACTION_DIM)
-            normalized_actions = normalized_actions.float().cpu().detach().numpy()
-
+                normalized_actions = normalized_actions.reshape(NUM_ACTIONS_CHUNK, ACTION_DIM)
+                normalized_actions = normalized_actions.float().cpu().detach().numpy()
         else:
             # Discrete token-based prediction
             predicted_action_token_ids = (
@@ -1010,6 +1010,7 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
         action_head=None,
         noisy_action_projector=None,
         use_film: bool = False,
+        use_full_injection: bool = False,
         **kwargs: str,
     ) -> np.ndarray:
         """Predict actions from input sequence, with options for different prediction methods.
@@ -1063,23 +1064,21 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
         projected_patch_embeddings = self._process_vision_features(pixel_values, language_embeddings, use_film)
 
         # Add proprioceptive features if provided
-        # use_proprio = proprio_projector is not None and proprio is not None
-        # if use_proprio:
-        #    proprio = torch.Tensor(proprio).to(projected_patch_embeddings.device, dtype=projected_patch_embeddings.dtype)
-        #    projected_patch_embeddings = self._process_proprio_features(
-        #        projected_patch_embeddings, proprio, proprio_projector
-        #    )
+        use_proprio = proprio_projector is not None and proprio is not None
+        if use_proprio:
+            proprio = torch.Tensor(proprio).to(projected_patch_embeddings.device, dtype=projected_patch_embeddings.dtype)
+            projected_patch_embeddings = self._process_proprio_features(
+                projected_patch_embeddings, proprio, proprio_projector
+            )
 
         # Use diffusion if provided, otherwise use regression or discrete prediction
         use_diffusion = noisy_action_projector is not None and hasattr(action_head, "noise_scheduler")
         use_proprio = proprio_projector is not None and proprio is not None
-        if use_proprio:
-            proprio = torch.Tensor(proprio).to(projected_patch_embeddings.device, dtype=projected_patch_embeddings.dtype)
 
         # Calculate number of patches (including proprio token and/or diffusion timestep embedding if present)
         NUM_PATCHES = self.vision_backbone.get_num_patches() * self.vision_backbone.get_num_images_in_input()
-        #if use_proprio:
-        #    NUM_PATCHES += 1
+        if use_proprio:
+            NUM_PATCHES += 1
         if use_diffusion:
             NUM_PATCHES += 1
 
@@ -1115,6 +1114,7 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
                 action_head,
                 proprio,
                 proprio_projector,
+                use_full_injection,
             )
 
         # Unnormalize predicted actions
