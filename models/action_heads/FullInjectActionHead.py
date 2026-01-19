@@ -50,7 +50,7 @@ class FullInjectActionHead(nn.Module):
         batch_size = actions_hidden_states.shape[0]
         device = actions_hidden_states.device
 
-        if proprio:
+        if proprio is not None:
             proprio = proprio.reshape(batch_size, -1).to(torch.bfloat16)  # (bsz, proprio_dim)
             proprio_features = proprio_projector(proprio)  # (bsz, llm_dim)
             proprio_features = proprio_features.unsqueeze(dim=1)  # (bsz, 1, llm_dim)
@@ -347,7 +347,7 @@ class MLPResNetBlock_Pro(nn.Module):
         ratio_g = torch.tanh(g)
 
         # concat h_a and p
-        if p:
+        if p is not None:
             h_adapter = torch.cat((h_a, p),dim=1)
         else:
             h_adapter = h_a

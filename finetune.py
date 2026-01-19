@@ -515,8 +515,8 @@ def run_forward_pass(
 
             predicted_actions = action_head.module.predict_action(
                 multi_layer_hidden_states,
-                proprio=None,
-                proprio_projector=None,
+                proprio=batch["proprio"] if use_proprio else None,
+                proprio_projector=proprio_projector if use_proprio else None,
                 phase=phase
                 )
 
@@ -978,8 +978,8 @@ def finetune(cfg: FinetuneConfig) -> None:
     NUM_PATCHES = vla.module.vision_backbone.get_num_patches() * vla.module.vision_backbone.get_num_images_in_input() # 512
     # If we have proprio inputs, a single proprio embedding is appended to the end of the vision patch embeddings
     # 取决于模型是否会将输入的 proprio 数据放入llm还是action head
-    if cfg.use_proprio:
-        NUM_PATCHES += 1
+    #if cfg.use_proprio:
+    #    NUM_PATCHES += 1
     # For diffusion, a single diffusion timestep embedding is appended to the end of the vision patch embeddings
     if cfg.use_diffusion:
         NUM_PATCHES += 1
